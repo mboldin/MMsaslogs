@@ -1,0 +1,1960 @@
+ 
+ 1          OPTIONS NONOTES NOSTIMER NOSOURCE NOSYNTAXCHECK;
+ 68         
+ 69         /*
+ 70             The following is JCL if you are using an IBM-type mainframe:
+ 71         
+ 72            //JOBCARD
+ 73            //V2423P1P EXEC SAS94,REGION=8M,
+ 74            // OPTIONS='ERRORS=0,NOCENTER,NEWS'
+ 75            //WORK  DD SPACE=(CYL,(1000,2))
+ 76            //WORK1   DD SPACE=(CYL,(2000,2))
+ 77            //* user-defined the location of formats
+ 78            //LIBRARY DD DISP=SHR,DSN=XXXX.XXXXXXX
+ 79            //*user-defined the location of macros
+ 80            //IN0 DD DISP=SHR,DSN=XXXX.XXXXXX
+ 81            //*the location of person-level file
+ 82            //IN1 DD DISP=SHR,DSN=XXXX.PERSON
+ 83            //*the location of the diagnosis file
+ 84            //IN2 DD DISP=SHR,DSN=XXXX.DIAG
+ 85            //*the location of the file containing all coefficients
+ 86            //INCOEF DD DISP=SHR,DSN=XXXX.HCCCOEFN
+ 87            //*the output file containing person-level scores
+ 88            //OUT DD DISP=(NEW,CATLG,KEEP),
+ 89            //    DSN=XXX.V2423P1P.PERSON,
+ 90            //    SPACE=(TRK,(20,10),RLSE)
+ 91            //SYSIN  DD *
+ 92         
+ 93            ******************************************************************
+ 94           If you are using PC-SAS, you must specify the location of the files
+ 95           on your PC in a libname/filename statement.
+ 96         
+ 97           LIBNAME LIBRARY "location of formats";
+ 98           FILENAME IN0 "location of macros";
+ 99           LIBNAME  IN1 "location of person-level file";
+ 100          LIBNAME  IN2 "location of diagnosis file";
+ 101          LIBNAME  INCOEF "location of the coefficients file";
+ 102          LIBNAME  OUT "location for the output file";
+ 103          */
+ 104        
+ 105        OPTIONS MPRINT;
+ 106          LIBNAME LIBRARY "/home/u63506291/sasuser/v24/Transport";
+ NOTE: Libref LIBRARY refers to the same physical library as _TEMP0.
+ NOTE: Libref LIBRARY was successfully assigned as follows: 
+       Engine:        V9 
+       Physical Name: /home/u63506291/sasuser/v24/Transport
+ 107        
+ 108        /*   FILENAME IN0 "/home/u63506291/sasuser.v94/HCC/Programs"; */
+ 109          FILENAME IN0 "/home/u63506291/sasuser/v24/Programs/V2423P1M.sas";
+ 110        
+ 111          LIBNAME  IN1 "/home/u63506291/sasuser/v24/Input";
+ NOTE: Libref IN1 was successfully assigned as follows: 
+       Engine:        V9 
+       Physical Name: /home/u63506291/sasuser/v24/Input
+ 112          LIBNAME  IN2 "/home/u63506291/sasuser/v24/Input";
+ NOTE: Libref IN2 refers to the same physical library as IN1.
+ NOTE: Libref IN2 was successfully assigned as follows: 
+       Engine:        V9 
+       Physical Name: /home/u63506291/sasuser/v24/Input
+ 113          LIBNAME  INCOEF "/home/u63506291/sasuser/v24/Transport";
+ NOTE: Libref INCOEF refers to the same physical library as LIBRARY.
+ NOTE: Libref INCOEF was successfully assigned as follows: 
+       Engine:        V9 
+       Physical Name: /home/u63506291/sasuser/v24/Transport
+ 114          LIBNAME  OUT "/home/u63506291/sasuser/v24/Output";
+ NOTE: Libref OUT was successfully assigned as follows: 
+       Engine:        V9 
+       Physical Name: /home/u63506291/sasuser/v24/Output
+ 115         ***********************************************************************
+ 116         *
+ 117         *   DESCRIPTION:
+ 118         *
+ 119         * V2423P1P program creates eighty six HCC variables version 24
+ 120         * (&HCCV24_list86) and nine score variables for each person who is
+ 121         * present in a person file (supplied by a user).
+ 122         * If a person has at least one diagnosis in DIAG file (supplied by a
+ 123         * user) then HCC variables are created, otherwise HCCs are set to 0.
+ 124         * Score variables are created using coefficients from 9 final models:
+ 125         *  1) Community NonDual Aged
+ 126         *  2) Community NonDual Disabled
+ 127         *  3) Community Full Benefit Dual Aged
+ 128         *  4) Community Full Benefit Dual Disabled
+ 129         *  5) Community Partial Benefit Dual Aged
+ 130         *  6) Community Partial Benefit Dual Disabled
+ 131         *  7) Long Term Institutional
+ 132         *  8) New Enrollees
+ 133         *  9) SNP New Enrollees
+ 134         *
+ 135         * Assumptions about input files:
+ 136         *   - both files are sorted by person ID
+ 137         *
+ 138         *   - person level file has the following variables:
+ 139         *     :&IDVAR    - person ID variable (it is a macro parameter, MBI
+ 140         *                  for Medicare data)
+ 141         *     :DOB       - date of birth
+ 142         *     :SEX       - sex
+ 143         *     :OREC      - original reason for entitlement
+ 144         *     :LTIMCAID  - Medicaid dummy variable for LTI (payment year)
+ 145         *     :NEMCAID   - Medicaid dummy variable for new enrollees (payment
+ 146         *                  year)
+ 147         *
+ 148         *   - diagnosis level file has the following vars:
+ 149         *     :&IDVAR  - person ID variable (it is a macro parameter, MBI for
+ 150         *                Medicare data)
+ 151         *     :DIAG    - diagnosis
+ 152         *
+ 153         * The program supplies parameters to a main macro %V2423P1M that calls
+ 154         * other external macros specific to V24 HCCs:
+ 155         *
+ 156         *      %AGESEXV2   - create age/sex, originally disabled, disabled vars
+ 157         *      %V24I0ED2   - perform edits to ICD10 diagnosis
+ 158         *      %V24H86L1   - assign labels to HCCs
+ 159         *      %V24H86H1   - set HCC=0 according to hierarchies
+ 160         *      %SCOREVAR   - calculate a score variable
+ 161         *
+ 162         * Program steps:
+ 163         *         step1: include external macros
+ 164         *         step2: define internal macro variables
+ 165         *         step3: merge person and diagnosis files outputting one
+ 166         *                record per person for each input person level record
+ 167         *         step3.1: declaration section
+ 168         *         step3.2: bring regression coefficients
+ 169         *         step3.3: merge person and diagnosis file
+ 170         *         step3.4: for the first record for a person set CC to 0
+ 171         *                  and calculate age
+ 172         *         step3.5: if there are any diagnoses for a person
+ 173         *                  then do the following:
+ 174         *                   - perform ICD10 edits using V24I0ED2 macro
+ 175         *                   - create CC using provided format
+ 176         *                   - create additional CC using additional formats
+ 177         *         step3.6: for the last record for a person do the
+ 178         *                  following:
+ 179         *                   - create demographic variables needed
+ 180         *                     for regressions (macro AGESEXV2)
+ 181         *                   - create HCC using hierarchies (macro V24H86H1)
+ 182         *                   - create HCC interaction variables
+ 183         *                   - create HCC and DISABL interaction variables
+ 184         *                   - set HCCs and interaction vars to zero if there
+ 185         *                     are no diagnoses for a person
+ 186         *                   - create scores for community models
+ 187         *                   - create score for institutional model
+ 188         *                   - create score for new enrollee model
+ 189         *                   - create score for SNP new enrollee model
+ 190         *         step4: data checks and proc contents
+ 191         *
+ 192         *   USER CUSTOMIZATION:
+ 193         *
+ 194         * A user must supply 2 files with the variables described above and
+ 195         * set the following parameters:
+ 196         *      INP      - SAS input person dataset
+ 197         *      IND      - SAS input diagnosis dataset
+ 198         *      OUTDATA  - SAS output dataset
+ 199         *      IDVAR    - name of person id variable (MBI for medicare data)
+ 200         *      KEEPVAR  - variables to keep in the output dataset
+ 201         *      SEDITS   - a switch that controls whether to perform MCE edits
+ 202         *                 on ICD10: 1-YES, 0-NO
+ 203         *      DATE_ASOF- reference date to calculate age. Set to February 1
+ 204         *                 of the payment year for consistency with CMS
+ 205         ***********************************************************************;
+ 206        
+ 207         %LET INPUTVARS=%STR(SEX DOB LTIMCAID NEMCAID OREC);
+ 208        
+ 209         %*demographic variables;
+ 210         %LET DEMVARS  =%STR(AGEF ORIGDS DISABL
+ 211                             F0_34  F35_44 F45_54 F55_59 F60_64 F65_69
+ 212                             F70_74 F75_79 F80_84 F85_89 F90_94 F95_GT
+ 213                             M0_34  M35_44 M45_54 M55_59 M60_64 M65_69
+ 214                             M70_74 M75_79 M80_84 M85_89 M90_94 M95_GT
+ 215                             NEF0_34  NEF35_44 NEF45_54 NEF55_59 NEF60_64
+ 216                             NEF65    NEF66    NEF67    NEF68    NEF69
+ 217                             NEF70_74 NEF75_79 NEF80_84 NEF85_89 NEF90_94
+ 218                             NEF95_GT
+ 219                             NEM0_34  NEM35_44 NEM45_54 NEM55_59 NEM60_64
+ 220                             NEM65    NEM66    NEM67    NEM68    NEM69
+ 221                             NEM70_74 NEM75_79 NEM80_84 NEM85_89 NEM90_94
+ 222                             NEM95_GT);
+ 223        
+ 224         %*list of HCCs included in models;
+ 225         %LET HCCV24_list86 = %STR(
+ 226             HCC1    HCC2    HCC6    HCC8    HCC9    HCC10   HCC11   HCC12
+ 227             HCC17   HCC18   HCC19   HCC21   HCC22   HCC23   HCC27   HCC28
+ 228             HCC29   HCC33   HCC34   HCC35   HCC39   HCC40   HCC46   HCC47
+ 229             HCC48   HCC51   HCC52   HCC54   HCC55   HCC56   HCC57   HCC58
+ 230             HCC59   HCC60   HCC70   HCC71   HCC72   HCC73   HCC74   HCC75
+ 231             HCC76   HCC77   HCC78   HCC79   HCC80   HCC82   HCC83   HCC84
+ 232             HCC85   HCC86   HCC87   HCC88   HCC96   HCC99   HCC100  HCC103
+ 233             HCC104  HCC106  HCC107  HCC108  HCC110  HCC111  HCC112  HCC114
+ 234             HCC115  HCC122  HCC124  HCC134  HCC135  HCC136  HCC137  HCC138
+ 235             HCC157  HCC158  HCC159  HCC161  HCC162  HCC166  HCC167  HCC169
+ 236             HCC170  HCC173  HCC176  HCC186  HCC188  HCC189
+ 237             );
+ 238        
+ 239         %*list of CCs that correspond to model HCCs;
+ 240         %LET CCV24_list86 = %STR(
+ 241             CC1     CC2     CC6     CC8     CC9     CC10    CC11    CC12
+ 242             CC17    CC18    CC19    CC21    CC22    CC23    CC27    CC28
+ 243             CC29    CC33    CC34    CC35    CC39    CC40    CC46    CC47
+ 244             CC48    CC51    CC52    CC54    CC55    CC56    CC57    CC58
+ 245             CC59    CC60    CC70    CC71    CC72    CC73    CC74    CC75
+ 246             CC76    CC77    CC78    CC79    CC80    CC82    CC83    CC84
+ 247             CC85    CC86    CC87    CC88    CC96    CC99    CC100   CC103
+ 248             CC104   CC106   CC107   CC108   CC110   CC111   CC112   CC114
+ 249             CC115   CC122   CC124   CC134   CC135   CC136   CC137   CC138
+ 250             CC157   CC158   CC159   CC161   CC162   CC166   CC167   CC169
+ 251             CC170   CC173   CC176   CC186   CC188   CC189
+ 252             );
+ 253        
+ 254         %LET SCOREVARS=%STR(SCORE_COMMUNITY_NA
+ 255                             SCORE_COMMUNITY_ND
+ 256                             SCORE_COMMUNITY_FBA
+ 257                             SCORE_COMMUNITY_FBD
+ 258                             SCORE_COMMUNITY_PBA
+ 259                             SCORE_COMMUNITY_PBD
+ 260                             SCORE_INSTITUTIONAL
+ 261                             SCORE_NEW_ENROLLEE
+ 262                             SCORE_SNP_NEW_ENROLLEE
+ 263                             );
+ 264        
+ 265         %* include main macro;
+ 266          %INCLUDE "/home/u63506291/sasuser/v24/Programs/V2423P1M.sas";
+ 890        
+ 891        /*  %INCLUDE IN0; *(V2423P1M)/SOURCE2; */
+ 892        
+ 893         **********************************************************************;
+ 894        %V2423P1M(INP      =IN1.PERSON,
+ 895                   IND      =IN2.DIAG,
+ 896                   OUTDATA  =OUT.PERSON,
+ 897                   IDVAR    =MBI,
+ 898                   KEEPVAR  =MBI &INPUTVARS &SCOREVARS &DEMVARS
+ 899                             &HCCV24_list86 &CCV24_list86,
+ 900                   SEDITS   =1,
+ 901                   DATE_ASOF="1FEB2023"D);
+ MPRINT(V2423P1M):   DATA OUT.PERSON;
+ MPRINT(V2423P1M):   *(KEEP=&KEEPVAR );
+ MPRINT(V24H86L1):   LABEL HCC1 = "HIV/AIDS " HCC2 = "Septicemia, Sepsis, Systemic Inflammatory Response Syndrome/Shock " HCC6 = 
+ "Opportunistic Infections " HCC8 = "Metastatic Cancer and Acute Leukemia " HCC9 = "Lung and Other Severe Cancers " HCC10 = 
+ "Lymphoma and Other Cancers " HCC11 = "Colorectal, Bladder, and Other Cancers " HCC12 = "Breast, Prostate, and Other Cancers and 
+ Tumors " HCC17 = "Diabetes with Acute Complications " HCC18 = "Diabetes with Chronic Complications " HCC19 = "Diabetes without 
+ Complication " HCC21 = "Protein-Calorie Malnutrition " HCC22 = "Morbid Obesity " HCC23 = "Other Significant Endocrine and Metabolic 
+ Disorders " HCC27 = "End-Stage Liver Disease " HCC28 = "Cirrhosis of Liver " HCC29 = "Chronic Hepatitis " HCC33 = "Intestinal 
+ Obstruction/Perforation " HCC34 = "Chronic Pancreatitis " HCC35 = "Inflammatory Bowel Disease " HCC39 = "Bone/Joint/Muscle 
+ Infections/Necrosis " HCC40 = "Rheumatoid Arthritis and Inflammatory Connective Tissue Disease " HCC46 = "Severe Hematological 
+ Disorders " HCC47 = "Disorders of Immunity " HCC48 = "Coagulation Defects and Other Specified Hematological Disorders " HCC51 = 
+ "Dementia With Complications " HCC52 = "Dementia Without Complication " HCC54 = "Substance Use with Psychotic Complications " HCC55 
+ = "Substance Use Disorder, Moderate/Severe, or Substance Use with Complications " HCC56 = "Substance Use Disorder, Mild, Except 
+ Alcohol and Cannabis " HCC57 = "Schizophrenia " HCC58 = "Reactive and Unspecified Psychosis " HCC59 = "Major Depressive, Bipolar, 
+ and Paranoid Disorders " HCC60 = "Personality Disorders " HCC70 = "Quadriplegia " HCC71 = "Paraplegia " HCC72 = "Spinal Cord 
+ Disorders/Injuries " HCC73 = "Amyotrophic Lateral Sclerosis and Other Motor Neuron Disease " HCC74 = "Cerebral Palsy " HCC75 = 
+ "Myasthenia Gravis/Myoneural Disorders and Guillain-Barre Syndrome/Inflammatory and Toxic Neuropathy " HCC76 = "Muscular Dystrophy 
+ " HCC77 = "Multiple Sclerosis " HCC78 = "Parkinson's and Huntington's Diseases " HCC79 = "Seizure Disorders and Convulsions " HCC80 
+ = "Coma, Brain Compression/Anoxic Damage " HCC82 = "Respirator Dependence/Tracheostomy Status " HCC83 = "Respiratory Arrest " HCC84 
+ = "Cardio-Respiratory Failure and Shock " HCC85 = "Congestive Heart Failure " HCC86 = "Acute Myocardial Infarction " HCC87 = 
+ "Unstable Angina and Other Acute Ischemic Heart Disease " HCC88 = "Angina Pectoris " HCC96 = "Specified Heart Arrhythmias " HCC99 = 
+ "Intracranial Hemorrhage " HCC100 = "Ischemic or Unspecified Stroke " HCC103 = "Hemiplegia/Hemiparesis " HCC104 = "Monoplegia, 
+ Other Paralytic Syndromes " HCC106 = "Atherosclerosis of the Extremities with Ulceration or Gangrene " HCC107 = "Vascular Disease 
+ with Complications " HCC108 = "Vascular Disease " HCC110 = "Cystic Fibrosis " HCC111 = "Chronic Obstructive Pulmonary Disease " 
+ HCC112 = "Fibrosis of Lung and Other Chronic Lung Disorders " HCC114 = "Aspiration and Specified Bacterial Pneumonias " HCC115 = 
+ "Pneumococcal Pneumonia, Empyema, Lung Abscess " HCC122 = "Proliferative Diabetic Retinopathy and Vitreous Hemorrhage " HCC124 = 
+ "Exudative Macular Degeneration " HCC134 = "Dialysis Status " HCC135 = "Acute Renal Failure " HCC136 = "Chronic Kidney Disease, 
+ Stage 5 " HCC137 = "Chronic Kidney Disease, Severe (Stage 4) " HCC138 = "Chronic Kidney Disease, Moderate (Stage 3) " HCC157 = 
+ "Pressure Ulcer of Skin with Necrosis Through to Muscle, Tendon, or Bone " HCC158 = "Pressure Ulcer of Skin with Full Thickness 
+ Skin Loss " HCC159 = "Pressure Ulcer of Skin with Partial Thickness Skin Loss " HCC161 = "Chronic Ulcer of Skin, Except Pressure " 
+ HCC162 = "Severe Skin Burn or Condition " HCC166 = "Severe Head Injury " HCC167 = "Major Head Injury " HCC169 = "Vertebral 
+ Fractures without Spinal Cord Injury " HCC170 = "Hip Fracture/Dislocation " HCC173 = "Traumatic Amputations and Complications " 
+ HCC176 = "Complications of Specified Implanted Device or Graft " HCC186 = "Major Organ Transplant or Replacement Status " HCC188 = 
+ "Artificial Openings for Feeding or Elimination " HCC189 = "Amputation Status, Lower Limb/Amputation Complications " ;
+ MPRINT(V2423P1M):   *HCC labels;
+ MPRINT(V2423P1M):   LENGTH CC $4. AGEF OriginallyDisabled_Female OriginallyDisabled_Male NMCAID_NORIGDIS_NEF0_34 
+ NMCAID_NORIGDIS_NEF35_44 NMCAID_NORIGDIS_NEF45_54 NMCAID_NORIGDIS_NEF55_59 NMCAID_NORIGDIS_NEF60_64 NMCAID_NORIGDIS_NEF65 
+ NMCAID_NORIGDIS_NEF66 NMCAID_NORIGDIS_NEF67 NMCAID_NORIGDIS_NEF68 NMCAID_NORIGDIS_NEF69 NMCAID_NORIGDIS_NEF70_74 
+ NMCAID_NORIGDIS_NEF75_79 NMCAID_NORIGDIS_NEF80_84 NMCAID_NORIGDIS_NEF85_89 NMCAID_NORIGDIS_NEF90_94 NMCAID_NORIGDIS_NEF95_GT 
+ NMCAID_NORIGDIS_NEM0_34 NMCAID_NORIGDIS_NEM35_44 NMCAID_NORIGDIS_NEM45_54 NMCAID_NORIGDIS_NEM55_59 NMCAID_NORIGDIS_NEM60_64 
+ NMCAID_NORIGDIS_NEM65 NMCAID_NORIGDIS_NEM66 NMCAID_NORIGDIS_NEM67 NMCAID_NORIGDIS_NEM68 NMCAID_NORIGDIS_NEM69 
+ NMCAID_NORIGDIS_NEM70_74 NMCAID_NORIGDIS_NEM75_79 NMCAID_NORIGDIS_NEM80_84 NMCAID_NORIGDIS_NEM85_89 NMCAID_NORIGDIS_NEM90_94 
+ NMCAID_NORIGDIS_NEM95_GT MCAID_NORIGDIS_NEF0_34 MCAID_NORIGDIS_NEF35_44 MCAID_NORIGDIS_NEF45_54 MCAID_NORIGDIS_NEF55_59 
+ MCAID_NORIGDIS_NEF60_64 MCAID_NORIGDIS_NEF65 MCAID_NORIGDIS_NEF66 MCAID_NORIGDIS_NEF67 MCAID_NORIGDIS_NEF68 MCAID_NORIGDIS_NEF69 
+ MCAID_NORIGDIS_NEF70_74 MCAID_NORIGDIS_NEF75_79 MCAID_NORIGDIS_NEF80_84 MCAID_NORIGDIS_NEF85_89 MCAID_NORIGDIS_NEF90_94 
+ MCAID_NORIGDIS_NEF95_GT MCAID_NORIGDIS_NEM0_34 MCAID_NORIGDIS_NEM35_44 MCAID_NORIGDIS_NEM45_54 MCAID_NORIGDIS_NEM55_59 
+ MCAID_NORIGDIS_NEM60_64 MCAID_NORIGDIS_NEM65 MCAID_NORIGDIS_NEM66 MCAID_NORIGDIS_NEM67 MCAID_NORIGDIS_NEM68 MCAID_NORIGDIS_NEM69 
+ MCAID_NORIGDIS_NEM70_74 MCAID_NORIGDIS_NEM75_79 MCAID_NORIGDIS_NEM80_84 MCAID_NORIGDIS_NEM85_89 MCAID_NORIGDIS_NEM90_94 
+ MCAID_NORIGDIS_NEM95_GT NMCAID_ORIGDIS_NEF65 NMCAID_ORIGDIS_NEF66 NMCAID_ORIGDIS_NEF67 NMCAID_ORIGDIS_NEF68 NMCAID_ORIGDIS_NEF69 
+ NMCAID_ORIGDIS_NEF70_74 NMCAID_ORIGDIS_NEF75_79 NMCAID_ORIGDIS_NEF80_84 NMCAID_ORIGDIS_NEF85_89 NMCAID_ORIGDIS_NEF90_94 
+ NMCAID_ORIGDIS_NEF95_GT NMCAID_ORIGDIS_NEM65 NMCAID_ORIGDIS_NEM66 NMCAID_ORIGDIS_NEM67 NMCAID_ORIGDIS_NEM68 NMCAID_ORIGDIS_NEM69 
+ NMCAID_ORIGDIS_NEM70_74 NMCAID_ORIGDIS_NEM75_79 NMCAID_ORIGDIS_NEM80_84 NMCAID_ORIGDIS_NEM85_89 NMCAID_ORIGDIS_NEM90_94 
+ NMCAID_ORIGDIS_NEM95_GT MCAID_ORIGDIS_NEF65 MCAID_ORIGDIS_NEF66 MCAID_ORIGDIS_NEF67 MCAID_ORIGDIS_NEF68 MCAID_ORIGDIS_NEF69 
+ MCAID_ORIGDIS_NEF70_74 MCAID_ORIGDIS_NEF75_79 MCAID_ORIGDIS_NEF80_84 MCAID_ORIGDIS_NEF85_89 MCAID_ORIGDIS_NEF90_94 
+ MCAID_ORIGDIS_NEF95_GT MCAID_ORIGDIS_NEM65 MCAID_ORIGDIS_NEM66 MCAID_ORIGDIS_NEM67 MCAID_ORIGDIS_NEM68 MCAID_ORIGDIS_NEM69 
+ MCAID_ORIGDIS_NEM70_74 MCAID_ORIGDIS_NEM75_79 MCAID_ORIGDIS_NEM80_84 MCAID_ORIGDIS_NEM85_89 MCAID_ORIGDIS_NEM90_94 
+ MCAID_ORIGDIS_NEM95_GT CC1-CC204 HCC1-HCC204 CANCER DIABETES CHF CARD_RESP_FAIL gCopdCF RENAL_V24 SEPSIS PRESSURE_ULCER 
+ gSubstanceUseDisorder_V24 gPsychiatric_V24 gSubstanceUseDisorder_gPsych HCC47_gCancer DIABETES_CHF CHF_gCopdCF HCC85_gRenal_V24 
+ gCopdCF_CARD_RESP_FAIL HCC85_HCC96 HCC47_gCancer DIABETES_CHF CHF_gCopdCF HCC85_gRenal_V24 gCopdCF_CARD_RESP_FAIL HCC85_HCC96 
+ gSubstanceUseDisorder_gPsych DISABLED_HCC85 DISABLED_PRESSURE_ULCER DISABLED_HCC161 DISABLED_HCC39 DISABLED_HCC77 DISABLED_HCC6 
+ CHF_gCopdCF gCopdCF_CARD_RESP_FAIL SEPSIS_PRESSURE_ULCER SEPSIS_ARTIF_OPENINGS ART_OPENINGS_PRESS_ULCER DIABETES_CHF 
+ gCopdCF_ASP_SPEC_B_PNEUM ASP_SPEC_B_PNEUM_PRES_ULC SEPSIS_ASP_SPEC_BACT_PNEUM SCHIZOPHRENIA_gCopdCF SCHIZOPHRENIA_CHF 
+ SCHIZOPHRENIA_SEIZURES AGEF_EDIT HCC_pymt D1 D2 D3 D4 D5 D6 D7 D8 D9 D10P 3.;
+ MPRINT(V2423P1M):   RETAIN CC1-CC204 0 AGEF AGEF_EDIT;
+ MPRINT(V2423P1M):   ARRAY C(204) CC1-CC204;
+ MPRINT(V2423P1M):   ARRAY HCC(204) HCC1-HCC204;
+ MPRINT(V2423P1M):   ARRAY RV HCC47_gCancer DIABETES_CHF CHF_gCopdCF HCC85_gRenal_V24 gCopdCF_CARD_RESP_FAIL HCC85_HCC96 
+ HCC47_gCancer DIABETES_CHF CHF_gCopdCF HCC85_gRenal_V24 gCopdCF_CARD_RESP_FAIL HCC85_HCC96 gSubstanceUseDisorder_gPsych 
+ DISABLED_HCC85 DISABLED_PRESSURE_ULCER DISABLED_HCC161 DISABLED_HCC39 DISABLED_HCC77 DISABLED_HCC6 CHF_gCopdCF 
+ gCopdCF_CARD_RESP_FAIL SEPSIS_PRESSURE_ULCER SEPSIS_ARTIF_OPENINGS ART_OPENINGS_PRESS_ULCER DIABETES_CHF gCopdCF_ASP_SPEC_B_PNEUM 
+ ASP_SPEC_B_PNEUM_PRES_ULC SEPSIS_ASP_SPEC_BACT_PNEUM SCHIZOPHRENIA_gCopdCF SCHIZOPHRENIA_CHF SCHIZOPHRENIA_SEIZURES CANCER DIABETES 
+ CHF CARD_RESP_FAIL gCopdCF RENAL_V24 SEPSIS PRESSURE_ULCER gSubstanceUseDisorder_V24 gPsychiatric_V24 gSubstanceUseDisorder_gPsych 
+ HCC_pymt D1 D2 D3 D4 D5 D6 D7 D8 D9 D10P ;
+ MPRINT(V2423P1M):   IF _N_ = 1 THEN SET INCOEF.HCCCOEFN;
+ MPRINT(V2423P1M):   MERGE IN1.PERSON(IN=IN1) IN2.DIAG(IN=IN2);
+ MPRINT(V2423P1M):   BY MBI;
+ 
+ MPRINT(V2423P1M):   IF IN1 THEN DO;
+
+MPRINT(V2423P1M):   IF FIRST.MBI THEN DO;
+ MPRINT(V2423P1M):   DO I=1 TO 204;
+ MPRINT(V2423P1M):   C(I)=0;
+ MPRINT(V2423P1M):   END;
+ MPRINT(V2423P1M):   AGEF =FLOOR((INTCK( 'MONTH',DOB,"1FEB2023"D)-(DAY("1FEB2023"D)<DAY(DOB)))/12);
+ MPRINT(V2423P1M):   IF AGEF<0 THEN AGEF=0;
+ MPRINT(V2423P1M):   AGEF_EDIT=AGEF ;
+ MPRINT(V2423P1M):   END;
+ MPRINT(V2423P1M):   IF IN1 & IN2 THEN DO;
+ MPRINT(V2423P1M):   CC="9999";
+ MPRINT(V24I0ED2):   IF SEX="2" AND DIAG IN ("D66", "D67") THEN CC="48";
+ MPRINT(V24I0ED2):   ELSE IF AGEF_EDIT < 18 AND DIAG IN ("J410", "J411", "J418", "J42", "J430", "J431", "J432", "J438", "J439", 
+ "J440", "J441", "J449", "J982", "J983") THEN CC="112";
+ MPRINT(V24I0ED2):   ELSE IF (AGEF_EDIT < 6 OR AGEF_EDIT > 18) AND DIAG = "F3481" THEN CC="-1.0";
+ MPRINT(V24I0ED2):     _TAGE=PUT(DIAG, $IAGEHYBCY22MCE.);
+ MPRINT(V24I0ED2):   IF _TAGE NE "-1" AND (AGEF_EDIT < INPUT(PUT(_TAGE, $AGEL.),8.) OR AGEF_EDIT > INPUT(PUT(_TAGE, $AGEU.),8.)) 
+ THEN CC='-1.0';
+ MPRINT(V24I0ED2):   _TSEX=PUT(DIAG, $ISEXHYBCY22MCE.);
+ MPRINT(V24I0ED2):   IF _TSEX NE "-1" & _TSEX NE SEX THEN CC='-1.0';
+ MPRINT(V2423P1M):   IF CC NE "-1.0" AND CC NE "9999" THEN DO;
+ MPRINT(V2423P1M):     IND=INPUT(CC,4.);
+ MPRINT(V2423P1M):     IF 1 <= IND <= 204 THEN C(IND)=1;
+ MPRINT(V2423P1M):   END;
+ MPRINT(V2423P1M):   ELSE IF CC="9999" THEN DO;
+ MPRINT(V2423P1M):     ** assignment 1 **;
+ MPRINT(V2423P1M):     IND = INPUT(LEFT(PUT(DIAG,$IAS1012324Y22Y23MC.)),4.);
+ MPRINT(V2423P1M):     IF 1 <= IND <= 204 THEN C(IND)=1;
+ MPRINT(V2423P1M):     ** assignment 2 **;
+ MPRINT(V2423P1M):     IND = INPUT(LEFT(PUT(DIAG,$IAS2012324Y22Y23MC.)),4.);
+ MPRINT(V2423P1M):     IF 1 <= IND <= 204 THEN C(IND)=1;
+ MPRINT(V2423P1M):   END;
+ 
+ MPRINT(V2423P1M):   END;  ## IF FIRST.MBI
+ 
+ MPRINT(V2423P1M):   IF LAST.MBI THEN DO;
+ MPRINT(AGESEXV2):   LENGTH F0_34 F35_44 F45_54 F55_59 F60_64 F65_69 F70_74 F75_79 F80_84 F85_89 F90_94 F95_GT M0_34 M35_44 M45_54 
+ M55_59 M60_64 M65_69 M70_74 M75_79 M80_84 M85_89 M90_94 M95_GT DISABL ORIGDS NEF0_34 NEF35_44 NEF45_54 NEF55_59 NEF60_64 NEF65 
+ NEF66 NEF67 NEF68 NEF69 NEF70_74 NEF75_79 NEF80_84 NEF85_89 NEF90_94 NEF95_GT NEM0_34 NEM35_44 NEM45_54 NEM55_59 NEM60_64 NEM65 
+ NEM66 NEM67 NEM68 NEM69 NEM70_74 NEM75_79 NEM80_84 NEM85_89 NEM90_94 NEM95_GT 3.;
+ MPRINT(AGESEXV2):   ARRAY CELL(24) F0_34 F35_44 F45_54 F55_59 F60_64 F65_69 F70_74 F75_79 F80_84 F85_89 F90_94 F95_GT M0_34 M35_44 
+ M45_54 M55_59 M60_64 M65_69 M70_74 M75_79 M80_84 M85_89 M90_94 M95_GT ;
+ MPRINT(AGESEXV2):   ARRAY NECELL(32) NEF0_34 NEF35_44 NEF45_54 NEF55_59 NEF60_64 NEF65 NEF66 NEF67 NEF68 NEF69 NEF70_74 NEF75_79 
+ NEF80_84 NEF85_89 NEF90_94 NEF95_GT NEM0_34 NEM35_44 NEM45_54 NEM55_59 NEM60_64 NEM65 NEM66 NEM67 NEM68 NEM69 NEM70_74 NEM75_79 
+ NEM80_84 NEM85_89 NEM90_94 NEM95_GT ;
+ MPRINT(AGESEXV2):   DISABL = (AGEF < 65 & OREC ne "0");
+ MPRINT(AGESEXV2):   ORIGDS = (OREC = '1')*(DISABL = 0);
+ MPRINT(AGESEXV2):   SELECT;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 0<= AGEF <=34) _AGESEX = 1;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 34< AGEF <=44) _AGESEX = 2;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 44< AGEF <=54) _AGESEX = 3;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 54< AGEF <=59) _AGESEX = 4;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 59< AGEF <=64) _AGESEX = 5;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 64< AGEF <=69) _AGESEX = 6;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 69< AGEF <=74) _AGESEX = 7;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 74< AGEF <=79) _AGESEX = 8;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 79< AGEF <=84) _AGESEX = 9;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 84< AGEF <=89) _AGESEX = 10;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 89< AGEF <=94) _AGESEX = 11;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & AGEF >94) _AGESEX = 12;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 0<= AGEF <=34) _AGESEX = 13;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 34< AGEF <=44) _AGESEX = 14;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 44< AGEF <=54) _AGESEX = 15;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 54< AGEF <=59) _AGESEX = 16;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 59< AGEF <=64) _AGESEX = 17;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 64< AGEF <=69) _AGESEX = 18;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 69< AGEF <=74) _AGESEX = 19;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 74< AGEF <=79) _AGESEX = 20;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 79< AGEF <=84) _AGESEX = 21;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 84< AGEF <=89) _AGESEX = 22;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 89< AGEF <=94) _AGESEX = 23;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & AGEF > 94) _AGESEX = 24;
+ MPRINT(AGESEXV2):   OTHERWISE;
+ MPRINT(AGESEXV2):   END;
+ MPRINT(AGESEXV2):   DO _I=1 TO 24;
+ MPRINT(AGESEXV2):   CELL(_I) = (_AGESEX = _I);
+ MPRINT(AGESEXV2):   END;
+ MPRINT(AGESEXV2):   SELECT;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 0<= AGEF <=34) NE_AGESEX = 1;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 34< AGEF <=44) NE_AGESEX = 2;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 44< AGEF <=54) NE_AGESEX = 3;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 54< AGEF <=59) NE_AGESEX = 4;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 59< AGEF <=63) NE_AGESEX = 5;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & AGEF=64 & OREC NE '0') NE_AGESEX = 5;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & AGEF=64 & OREC='0') NE_AGESEX = 6;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & AGEF =65) NE_AGESEX = 6;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & AGEF =66) NE_AGESEX = 7;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & AGEF =67) NE_AGESEX = 8;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & AGEF =68) NE_AGESEX = 9;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & AGEF =69) NE_AGESEX = 10;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 69< AGEF <=74) NE_AGESEX = 11;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 74< AGEF <=79) NE_AGESEX = 12;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 79< AGEF <=84) NE_AGESEX = 13;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 84< AGEF <=89) NE_AGESEX = 14;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & 89< AGEF <=94) NE_AGESEX = 15;
+ MPRINT(AGESEXV2):   WHEN(SEX='2' & AGEF >94) NE_AGESEX = 16;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 0<= AGEF <=34) NE_AGESEX = 17;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 34< AGEF <=44) NE_AGESEX = 18;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 44< AGEF <=54) NE_AGESEX = 19;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 54< AGEF <=59) NE_AGESEX = 20;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 59< AGEF <=63) NE_AGESEX = 21;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & AGEF=64 & OREC NE '0') NE_AGESEX = 21;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & AGEF=64 & OREC='0') NE_AGESEX = 22;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & AGEF =65) NE_AGESEX = 22;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & AGEF =66) NE_AGESEX = 23;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & AGEF =67) NE_AGESEX = 24;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & AGEF =68) NE_AGESEX = 25;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & AGEF =69) NE_AGESEX = 26;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 69< AGEF <=74) NE_AGESEX = 27;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 74< AGEF <=79) NE_AGESEX = 28;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 79< AGEF <=84) NE_AGESEX = 29;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 84< AGEF <=89) NE_AGESEX = 30;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & 89< AGEF <=94) NE_AGESEX = 31;
+ MPRINT(AGESEXV2):   WHEN(SEX='1' & AGEF >94) NE_AGESEX = 32;
+ MPRINT(AGESEXV2):   OTHERWISE;
+ MPRINT(AGESEXV2):   END;
+ MPRINT(AGESEXV2):   DO _I=1 TO 32;
+ MPRINT(AGESEXV2):   NECELL(_I)=(NE_AGESEX=_I);
+ MPRINT(AGESEXV2):   END;
+ MPRINT(AGESEXV2):   LABEL ORIGDS = "originally disabled dummy variable" DISABL = "disabled dummy variable" ;
+ MPRINT(V2423P1M):   OriginallyDisabled_Female= ORIGDS*(SEX='2');
+ MPRINT(V2423P1M):   OriginallyDisabled_Male = ORIGDS*(SEX='1');
+ MPRINT(V2423P1M):   NE_ORIGDS = (AGEF>=65)*(OREC='1');
+ MPRINT(V2423P1M):   NMCAID_NORIGDIS = (NEMCAID <=0 and NE_ORIGDS <=0);
+ MPRINT(V2423P1M):   MCAID_NORIGDIS = (NEMCAID > 0 and NE_ORIGDS <=0);
+ MPRINT(V2423P1M):   NMCAID_ORIGDIS = (NEMCAID <=0 and NE_ORIGDS > 0);
+ MPRINT(V2423P1M):   MCAID_ORIGDIS = (NEMCAID > 0 and NE_ORIGDS > 0);
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF0_34 = NMCAID_NORIGDIS * NEF0_34;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF35_44 = NMCAID_NORIGDIS * NEF35_44;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF45_54 = NMCAID_NORIGDIS * NEF45_54;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF55_59 = NMCAID_NORIGDIS * NEF55_59;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF60_64 = NMCAID_NORIGDIS * NEF60_64;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF65 = NMCAID_NORIGDIS * NEF65;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF66 = NMCAID_NORIGDIS * NEF66;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF67 = NMCAID_NORIGDIS * NEF67;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF68 = NMCAID_NORIGDIS * NEF68;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF69 = NMCAID_NORIGDIS * NEF69;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF70_74 = NMCAID_NORIGDIS * NEF70_74;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF75_79 = NMCAID_NORIGDIS * NEF75_79;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF80_84 = NMCAID_NORIGDIS * NEF80_84;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF85_89 = NMCAID_NORIGDIS * NEF85_89;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF90_94 = NMCAID_NORIGDIS * NEF90_94;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEF95_GT = NMCAID_NORIGDIS * NEF95_GT;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM0_34 = NMCAID_NORIGDIS * NEM0_34;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM35_44 = NMCAID_NORIGDIS * NEM35_44;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM45_54 = NMCAID_NORIGDIS * NEM45_54;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM55_59 = NMCAID_NORIGDIS * NEM55_59;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM60_64 = NMCAID_NORIGDIS * NEM60_64;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM65 = NMCAID_NORIGDIS * NEM65;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM66 = NMCAID_NORIGDIS * NEM66;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM67 = NMCAID_NORIGDIS * NEM67;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM68 = NMCAID_NORIGDIS * NEM68;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM69 = NMCAID_NORIGDIS * NEM69;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM70_74 = NMCAID_NORIGDIS * NEM70_74;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM75_79 = NMCAID_NORIGDIS * NEM75_79;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM80_84 = NMCAID_NORIGDIS * NEM80_84;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM85_89 = NMCAID_NORIGDIS * NEM85_89;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM90_94 = NMCAID_NORIGDIS * NEM90_94;
+ MPRINT(INTER):   NMCAID_NORIGDIS_NEM95_GT = NMCAID_NORIGDIS * NEM95_GT;
+ MPRINT(V2423P1M):  ;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF0_34 = MCAID_NORIGDIS * NEF0_34;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF35_44 = MCAID_NORIGDIS * NEF35_44;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF45_54 = MCAID_NORIGDIS * NEF45_54;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF55_59 = MCAID_NORIGDIS * NEF55_59;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF60_64 = MCAID_NORIGDIS * NEF60_64;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF65 = MCAID_NORIGDIS * NEF65;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF66 = MCAID_NORIGDIS * NEF66;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF67 = MCAID_NORIGDIS * NEF67;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF68 = MCAID_NORIGDIS * NEF68;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF69 = MCAID_NORIGDIS * NEF69;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF70_74 = MCAID_NORIGDIS * NEF70_74;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF75_79 = MCAID_NORIGDIS * NEF75_79;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF80_84 = MCAID_NORIGDIS * NEF80_84;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF85_89 = MCAID_NORIGDIS * NEF85_89;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF90_94 = MCAID_NORIGDIS * NEF90_94;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEF95_GT = MCAID_NORIGDIS * NEF95_GT;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM0_34 = MCAID_NORIGDIS * NEM0_34;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM35_44 = MCAID_NORIGDIS * NEM35_44;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM45_54 = MCAID_NORIGDIS * NEM45_54;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM55_59 = MCAID_NORIGDIS * NEM55_59;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM60_64 = MCAID_NORIGDIS * NEM60_64;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM65 = MCAID_NORIGDIS * NEM65;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM66 = MCAID_NORIGDIS * NEM66;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM67 = MCAID_NORIGDIS * NEM67;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM68 = MCAID_NORIGDIS * NEM68;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM69 = MCAID_NORIGDIS * NEM69;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM70_74 = MCAID_NORIGDIS * NEM70_74;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM75_79 = MCAID_NORIGDIS * NEM75_79;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM80_84 = MCAID_NORIGDIS * NEM80_84;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM85_89 = MCAID_NORIGDIS * NEM85_89;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM90_94 = MCAID_NORIGDIS * NEM90_94;
+ MPRINT(INTER):   MCAID_NORIGDIS_NEM95_GT = MCAID_NORIGDIS * NEM95_GT;
+ MPRINT(V2423P1M):  ;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEF65 = NMCAID_ORIGDIS * NEF65;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEF66 = NMCAID_ORIGDIS * NEF66;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEF67 = NMCAID_ORIGDIS * NEF67;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEF68 = NMCAID_ORIGDIS * NEF68;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEF69 = NMCAID_ORIGDIS * NEF69;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEF70_74 = NMCAID_ORIGDIS * NEF70_74;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEF75_79 = NMCAID_ORIGDIS * NEF75_79;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEF80_84 = NMCAID_ORIGDIS * NEF80_84;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEF85_89 = NMCAID_ORIGDIS * NEF85_89;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEF90_94 = NMCAID_ORIGDIS * NEF90_94;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEF95_GT = NMCAID_ORIGDIS * NEF95_GT;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEM65 = NMCAID_ORIGDIS * NEM65;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEM66 = NMCAID_ORIGDIS * NEM66;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEM67 = NMCAID_ORIGDIS * NEM67;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEM68 = NMCAID_ORIGDIS * NEM68;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEM69 = NMCAID_ORIGDIS * NEM69;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEM70_74 = NMCAID_ORIGDIS * NEM70_74;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEM75_79 = NMCAID_ORIGDIS * NEM75_79;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEM80_84 = NMCAID_ORIGDIS * NEM80_84;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEM85_89 = NMCAID_ORIGDIS * NEM85_89;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEM90_94 = NMCAID_ORIGDIS * NEM90_94;
+ MPRINT(INTER):   NMCAID_ORIGDIS_NEM95_GT = NMCAID_ORIGDIS * NEM95_GT;
+ MPRINT(V2423P1M):  ;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEF65 = MCAID_ORIGDIS * NEF65;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEF66 = MCAID_ORIGDIS * NEF66;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEF67 = MCAID_ORIGDIS * NEF67;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEF68 = MCAID_ORIGDIS * NEF68;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEF69 = MCAID_ORIGDIS * NEF69;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEF70_74 = MCAID_ORIGDIS * NEF70_74;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEF75_79 = MCAID_ORIGDIS * NEF75_79;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEF80_84 = MCAID_ORIGDIS * NEF80_84;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEF85_89 = MCAID_ORIGDIS * NEF85_89;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEF90_94 = MCAID_ORIGDIS * NEF90_94;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEF95_GT = MCAID_ORIGDIS * NEF95_GT;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEM65 = MCAID_ORIGDIS * NEM65;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEM66 = MCAID_ORIGDIS * NEM66;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEM67 = MCAID_ORIGDIS * NEM67;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEM68 = MCAID_ORIGDIS * NEM68;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEM69 = MCAID_ORIGDIS * NEM69;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEM70_74 = MCAID_ORIGDIS * NEM70_74;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEM75_79 = MCAID_ORIGDIS * NEM75_79;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEM80_84 = MCAID_ORIGDIS * NEM80_84;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEM85_89 = MCAID_ORIGDIS * NEM85_89;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEM90_94 = MCAID_ORIGDIS * NEM90_94;
+ MPRINT(INTER):   MCAID_ORIGDIS_NEM95_GT = MCAID_ORIGDIS * NEM95_GT;
+ MPRINT(V2423P1M):  ;
+ 
+ MPRINT(V2423P1M):   IF IN1 & IN2 THEN DO;
+ MPRINT(V24H86H1):     DO K=1 TO 204;
+ MPRINT(V24H86H1):     HCC(K)=C(K);
+ MPRINT(V24H86H1):   END;
+                              
+ MPRINT(SET0):   IF HCC8=1 THEN DO I = 9, 10, 11, 12 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC9=1 THEN DO I = 10, 11, 12 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC10=1 THEN DO I = 11, 12 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC11=1 THEN DO I = 12 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC17=1 THEN DO I = 18, 19 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC18=1 THEN DO I = 19 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC27=1 THEN DO I = 28, 29, 80 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC28=1 THEN DO I = 29 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC46=1 THEN DO I = 48 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC51=1 THEN DO I = 52 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC54=1 THEN DO I = 55, 56 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC55=1 THEN DO I = 56 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC57=1 THEN DO I = 58, 59, 60 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC58=1 THEN DO I = 59, 60 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC59=1 THEN DO I = 60 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC70=1 THEN DO I = 71, 72, 103, 104, 169 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC71=1 THEN DO I = 72, 104, 169 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC72=1 THEN DO I = 169 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC82=1 THEN DO I = 83, 84 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC83=1 THEN DO I = 84 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC86=1 THEN DO I = 87, 88 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC87=1 THEN DO I = 88 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC99=1 THEN DO I = 100 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC103=1 THEN DO I = 104 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC106=1 THEN DO I = 107, 108, 161, 189 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC107=1 THEN DO I = 108 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC110=1 THEN DO I = 111, 112 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC111=1 THEN DO I = 112 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC114=1 THEN DO I = 115 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC134=1 THEN DO I = 135, 136, 137, 138 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC135=1 THEN DO I = 136, 137, 138 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC136=1 THEN DO I = 137, 138 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC137=1 THEN DO I = 138 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC157=1 THEN DO I = 158, 159, 161 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC158=1 THEN DO I = 159, 161 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC159=1 THEN DO I = 161 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;
+ MPRINT(V24H86H1):  ;
+ MPRINT(SET0):   IF HCC166=1 THEN DO I = 80, 167 ;
+ MPRINT(SET0):   HCC(I) = 0;
+ MPRINT(SET0):   END;   
+ 
+ MPRINT(V24H86H1):  ;
+ MPRINT(V2423P1M):   CANCER = MAX(HCC8, HCC9, HCC10, HCC11, HCC12);
+ MPRINT(V2423P1M):   DIABETES = MAX(HCC17, HCC18, HCC19);
+ MPRINT(V2423P1M):   CARD_RESP_FAIL = MAX(HCC82, HCC83, HCC84);
+ MPRINT(V2423P1M):   CHF = HCC85;
+ MPRINT(V2423P1M):   gCopdCF = MAX(HCC110, HCC111, HCC112);
+ MPRINT(V2423P1M):   RENAL_V24 = MAX(HCC134, HCC135, HCC136, HCC137, HCC138);
+ MPRINT(V2423P1M):   SEPSIS = HCC2;
+ MPRINT(V2423P1M):   gSubstanceUseDisorder_V24= MAX(HCC54, HCC55, HCC56);
+ MPRINT(V2423P1M):   gPsychiatric_V24 = MAX(HCC57, HCC58, HCC59, HCC60);
+ MPRINT(V2423P1M):   HCC47_gCancer = HCC47*Cancer;
+ MPRINT(V2423P1M):   DIABETES_CHF = DIABETES*CHF;
+ MPRINT(V2423P1M):   CHF_gCopdCF = CHF*gCopdCF;
+ MPRINT(V2423P1M):   HCC85_gRenal_V24 = HCC85*Renal_V24;
+ MPRINT(V2423P1M):   gCopdCF_CARD_RESP_FAIL = gCopdCF*CARD_RESP_FAIL;
+ MPRINT(V2423P1M):   HCC85_HCC96 = HCC85*HCC96;
+ MPRINT(V2423P1M):   gSubstanceUseDisorder_gPsych = gSubstanceUseDisorder_V24*gPsychiatric_V24;
+ MPRINT(V2423P1M):   PRESSURE_ULCER = MAX(HCC157, HCC158, HCC159);
+ MPRINT(V2423P1M):   ;
+ MPRINT(V2423P1M):   SEPSIS_PRESSURE_ULCER = SEPSIS*PRESSURE_ULCER;
+ MPRINT(V2423P1M):   SEPSIS_ARTIF_OPENINGS = SEPSIS*(HCC188);
+ MPRINT(V2423P1M):   ART_OPENINGS_PRESS_ULCER = (HCC188)*PRESSURE_ULCER;
+ MPRINT(V2423P1M):   gCopdCF_ASP_SPEC_B_PNEUM = gCopdCF*(HCC114);
+ MPRINT(V2423P1M):   ASP_SPEC_B_PNEUM_PRES_ULC = (HCC114)*PRESSURE_ULCER;
+ MPRINT(V2423P1M):   SEPSIS_ASP_SPEC_BACT_PNEUM = SEPSIS*(HCC114);
+ MPRINT(V2423P1M):   SCHIZOPHRENIA_gCopdCF = (HCC57)*gCopdCF;
+ MPRINT(V2423P1M):   SCHIZOPHRENIA_CHF = (HCC57)*CHF;
+ MPRINT(V2423P1M):   SCHIZOPHRENIA_SEIZURES = (HCC57)*(HCC79);
+ MPRINT(V2423P1M):   DISABLED_HCC85 = DISABL*(HCC85);
+ MPRINT(V2423P1M):   DISABLED_PRESSURE_ULCER = DISABL*PRESSURE_ULCER;
+ MPRINT(V2423P1M):   DISABLED_HCC161 = DISABL*(HCC161);
+ MPRINT(V2423P1M):   DISABLED_HCC39 = DISABL*(HCC39);
+ MPRINT(V2423P1M):   DISABLED_HCC77 = DISABL*(HCC77);
+ MPRINT(V2423P1M):   DISABLED_HCC6 = DISABL*(HCC6);
+
+MPRINT(V2423P1M):   END;  ????  FIRST MBI
+ 
+ 
+ MPRINT(V2423P1M):   *there are some diagnoses for a person;
+ MPRINT(V2423P1M):   ELSE DO; *ELSE not FIRST MBI ??
+ 
+ MPRINT(V2423P1M):   DO I=1 TO 204;
+ MPRINT(V2423P1M):   HCC(I)=0;
+ MPRINT(V2423P1M):   END;
+ 
+  ** OTHER ITEMS not HCC
+ MPRINT(V2423P1M):   DO OVER RV;
+ MPRINT(V2423P1M):   RV=0;
+ MPRINT(V2423P1M):   END;
+ 
+ MPRINT(V2423P1M):   END;  
+ 
+ MPRINT(V2423P1M):   *HCC Counts;
+ MPRINT(V2423P1M):   ARRAY CHPYMT(86) HCC1 HCC2 HCC6 HCC8 HCC9 HCC10 HCC11 HCC12 HCC17 HCC18 HCC19 HCC21 HCC22 HCC23 HCC27 HCC28 
+ HCC29 HCC33 HCC34 HCC35 HCC39 HCC40 HCC46 HCC47 HCC48 HCC51 HCC52 HCC54 HCC55 HCC56 HCC57 HCC58 HCC59 HCC60 HCC70 HCC71 HCC72 HCC73 
+ HCC74 HCC75 HCC76 HCC77 HCC78 HCC79 HCC80 HCC82 HCC83 HCC84 HCC85 HCC86 HCC87 HCC88 HCC96 HCC99 HCC100 HCC103 HCC104 HCC106 HCC107 
+ HCC108 HCC110 HCC111 HCC112 HCC114 HCC115 HCC122 HCC124 HCC134 HCC135 HCC136 HCC137 HCC138 HCC157 HCC158 HCC159 HCC161 HCC162 
+ HCC166 HCC167 HCC169 HCC170 HCC173 HCC176 HCC186 HCC188 HCC189 ;
+ MPRINT(V2423P1M):   ARRAY ZS(9) D1-D9;
+ MPRINT(V2423P1M):   HCC_pymt = sum(of CHPYMT(*));
+ MPRINT(V2423P1M):   do i = 1 to dim(ZS) ;
+ MPRINT(V2423P1M):   ZS(i)=(HCC_pymt=i);
+ MPRINT(V2423P1M):   end ;
+ MPRINT(V2423P1M):   D10P=(HCC_pymt>=10);
+ MPRINT(V2423P1M):   LABEL F0_34 = "Female 0-34 " F35_44 = "Female 35-44" F45_54 = "Female 45-54" F55_59 = "Female 55-59" F60_64 = 
+ "Female 60-64" F65_69 = "Female 65-69" F70_74 = "Female 70-74" F75_79 = "Female 75-79" F80_84 = "Female 80-84" F85_89 = "Female 
+ 85-89" F90_94 = "Female 90-94" F95_GT = "Female 95+  " M0_34 = "Male 0-34   " M35_44 = "Male 35-44  " M45_54 = "Male 45-54  " 
+ M55_59 = "Male 55-59  " M60_64 = "Male 60-64  " M65_69 = "Male 65-69  " M70_74 = "Male 70-74  " M75_79 = "Male 75-79  " M80_84 = 
+ "Male 80-84  " M85_89 = "Male 85-89  " M90_94 = "Male 90-94  " M95_GT = "Male 95+    " HCC_pymt = "Count of 86 payment HCCs: Single 
+ continuous integer variable" D1= "1 payment HCC" D2= "2 payment HCCs" D3= "3 payment HCCs" D4= "4 payment HCCs" D5= "5 payment 
+ HCCs" D6= "6 payment HCCs" D7= "7 payment HCCs" D8= "8 payment HCCs" D9= "9 payment HCCs" D10P= "10 or more payment HCCs" 
+ HCC47_gCancer = "Immune Disorders*Cancer                  " DIABETES_CHF = "Congestive Heart Failure*Diabetes                       
+       " CHF_gCopdCF = "Congestive Heart Failure*Chronic Obstructive Pulmonary Disease" HCC85_gRenal_V24 = "Congestive Heart 
+ Failure*Renal                                " gCopdCF_CARD_RESP_FAIL= "Cardiorespiratory Failure *Chronic Obstructive Pulmonary 
+ Disease" HCC85_HCC96 = "Congestive Heart Failure*Specified Heart Arrhythmias          " OriginallyDisabled_Female= "Originally 
+ Disabled Female " OriginallyDisabled_Male = "Originally Disabled Male  " gSubstanceUseDisorder_gPsych= "Substance Use 
+ Disorder*Psychiatric" SEPSIS_PRESSURE_ULCER = "Sepsis*Pressure Ulcer " SEPSIS_ARTIF_OPENINGS = "Sepsis*Artificial Openings for 
+ Feeding or Elimination " ART_OPENINGS_PRESS_ULCER = "Artificial Openings for Feeding or Elimination*Pressure Ulcer " 
+ gCopdCF_ASP_SPEC_B_PNEUM = "Chronic Obstructive Pulmonary Disease*Aspiration and Specified Bacterial Pneumonias " 
+ ASP_SPEC_B_PNEUM_PRES_ULC = "Aspiration and Specified Bacterial Pneumonias*Pressure Ulcer " SEPSIS_ASP_SPEC_BACT_PNEUM = 
+ "Sepsis*Aspiration and Specified Bacterial Pneumonias " SCHIZOPHRENIA_gCopdCF = "Schizophrenia*Chronic Obstructive Pulmonary 
+ Disease " SCHIZOPHRENIA_CHF = "Schizophrenia*Congestive Heart Failure " SCHIZOPHRENIA_SEIZURES = "Schizophrenia*Seizure Disorders 
+ and Convulsions " DISABLED_HCC85 = "Disabled, Congestive Heart Failure " DISABLED_PRESSURE_ULCER = "Disabled, Pressure Ulcer " 
+ DISABLED_HCC161 = "Disabled, Chronic Ulcer of the Skin, Except Pressure Ulcer " DISABLED_HCC39 = "Disabled, Bone/Joint Muscle 
+ Infections/Necrosis " DISABLED_HCC77 = "Disabled, Multiple Sclerosis " DISABLED_HCC6 = "Disabled, Opportunistic Infections " ;
+ MPRINT(V2423P1M):   ;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA=0;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + F65_69*CNA_F65_69;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + F70_74*CNA_F70_74;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + F75_79*CNA_F75_79;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + F80_84*CNA_F80_84;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + F85_89*CNA_F85_89;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + F90_94*CNA_F90_94;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + F95_GT*CNA_F95_GT;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + M65_69*CNA_M65_69;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + M70_74*CNA_M70_74;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + M75_79*CNA_M75_79;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + M80_84*CNA_M80_84;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + M85_89*CNA_M85_89;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + M90_94*CNA_M90_94;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + M95_GT*CNA_M95_GT;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + OriginallyDisabled_Female*CNA_OriginallyDisabled_Female;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + OriginallyDisabled_Male*CNA_OriginallyDisabled_Male;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC1*CNA_HCC1;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC2*CNA_HCC2;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC6*CNA_HCC6;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC8*CNA_HCC8;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC9*CNA_HCC9;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC10*CNA_HCC10;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC11*CNA_HCC11;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC12*CNA_HCC12;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC17*CNA_HCC17;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC18*CNA_HCC18;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC19*CNA_HCC19;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC21*CNA_HCC21;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC22*CNA_HCC22;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC23*CNA_HCC23;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC27*CNA_HCC27;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC28*CNA_HCC28;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC29*CNA_HCC29;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC33*CNA_HCC33;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC34*CNA_HCC34;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC35*CNA_HCC35;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC39*CNA_HCC39;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC40*CNA_HCC40;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC46*CNA_HCC46;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC47*CNA_HCC47;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC48*CNA_HCC48;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC51*CNA_HCC51;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC52*CNA_HCC52;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC54*CNA_HCC54;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC55*CNA_HCC55;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC56*CNA_HCC56;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC57*CNA_HCC57;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC58*CNA_HCC58;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC59*CNA_HCC59;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC60*CNA_HCC60;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC70*CNA_HCC70;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC71*CNA_HCC71;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC72*CNA_HCC72;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC73*CNA_HCC73;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC74*CNA_HCC74;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC75*CNA_HCC75;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC76*CNA_HCC76;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC77*CNA_HCC77;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC78*CNA_HCC78;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC79*CNA_HCC79;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC80*CNA_HCC80;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC82*CNA_HCC82;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC83*CNA_HCC83;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC84*CNA_HCC84;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC85*CNA_HCC85;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC86*CNA_HCC86;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC87*CNA_HCC87;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC88*CNA_HCC88;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC96*CNA_HCC96;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC99*CNA_HCC99;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC100*CNA_HCC100;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC103*CNA_HCC103;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC104*CNA_HCC104;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC106*CNA_HCC106;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC107*CNA_HCC107;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC108*CNA_HCC108;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC110*CNA_HCC110;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC111*CNA_HCC111;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC112*CNA_HCC112;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC114*CNA_HCC114;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC115*CNA_HCC115;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC122*CNA_HCC122;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC124*CNA_HCC124;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC134*CNA_HCC134;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC135*CNA_HCC135;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC136*CNA_HCC136;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC137*CNA_HCC137;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC138*CNA_HCC138;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC157*CNA_HCC157;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC158*CNA_HCC158;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC159*CNA_HCC159;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC161*CNA_HCC161;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC162*CNA_HCC162;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC166*CNA_HCC166;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC167*CNA_HCC167;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC169*CNA_HCC169;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC170*CNA_HCC170;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC173*CNA_HCC173;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC176*CNA_HCC176;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC186*CNA_HCC186;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC188*CNA_HCC188;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC189*CNA_HCC189;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC47_gCancer*CNA_HCC47_gCancer;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + DIABETES_CHF*CNA_DIABETES_CHF;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + CHF_gCopdCF*CNA_CHF_gCopdCF;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC85_gRenal_V24*CNA_HCC85_gRenal_V24;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + gCopdCF_CARD_RESP_FAIL*CNA_gCopdCF_CARD_RESP_FAIL;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + HCC85_HCC96*CNA_HCC85_HCC96;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + D1*CNA_D1;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + D2*CNA_D2;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + D3*CNA_D3;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + D4*CNA_D4;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + D5*CNA_D5;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + D6*CNA_D6;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + D7*CNA_D7;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + D8*CNA_D8;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + D9*CNA_D9;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA + D10P*CNA_D10P;
+ MPRINT(V2423P1M):  ;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND=0;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + F0_34*CND_F0_34;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + F35_44*CND_F35_44;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + F45_54*CND_F45_54;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + F55_59*CND_F55_59;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + F60_64*CND_F60_64;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + M0_34*CND_M0_34;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + M35_44*CND_M35_44;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + M45_54*CND_M45_54;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + M55_59*CND_M55_59;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + M60_64*CND_M60_64;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC1*CND_HCC1;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC2*CND_HCC2;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC6*CND_HCC6;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC8*CND_HCC8;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC9*CND_HCC9;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC10*CND_HCC10;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC11*CND_HCC11;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC12*CND_HCC12;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC17*CND_HCC17;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC18*CND_HCC18;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC19*CND_HCC19;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC21*CND_HCC21;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC22*CND_HCC22;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC23*CND_HCC23;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC27*CND_HCC27;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC28*CND_HCC28;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC29*CND_HCC29;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC33*CND_HCC33;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC34*CND_HCC34;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC35*CND_HCC35;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC39*CND_HCC39;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC40*CND_HCC40;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC46*CND_HCC46;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC47*CND_HCC47;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC48*CND_HCC48;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC51*CND_HCC51;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC52*CND_HCC52;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC54*CND_HCC54;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC55*CND_HCC55;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC56*CND_HCC56;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC57*CND_HCC57;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC58*CND_HCC58;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC59*CND_HCC59;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC60*CND_HCC60;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC70*CND_HCC70;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC71*CND_HCC71;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC72*CND_HCC72;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC73*CND_HCC73;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC74*CND_HCC74;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC75*CND_HCC75;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC76*CND_HCC76;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC77*CND_HCC77;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC78*CND_HCC78;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC79*CND_HCC79;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC80*CND_HCC80;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC82*CND_HCC82;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC83*CND_HCC83;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC84*CND_HCC84;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC85*CND_HCC85;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC86*CND_HCC86;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC87*CND_HCC87;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC88*CND_HCC88;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC96*CND_HCC96;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC99*CND_HCC99;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC100*CND_HCC100;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC103*CND_HCC103;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC104*CND_HCC104;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC106*CND_HCC106;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC107*CND_HCC107;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC108*CND_HCC108;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC110*CND_HCC110;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC111*CND_HCC111;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC112*CND_HCC112;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC114*CND_HCC114;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC115*CND_HCC115;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC122*CND_HCC122;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC124*CND_HCC124;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC134*CND_HCC134;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC135*CND_HCC135;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC136*CND_HCC136;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC137*CND_HCC137;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC138*CND_HCC138;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC157*CND_HCC157;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC158*CND_HCC158;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC159*CND_HCC159;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC161*CND_HCC161;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC162*CND_HCC162;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC166*CND_HCC166;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC167*CND_HCC167;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC169*CND_HCC169;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC170*CND_HCC170;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC173*CND_HCC173;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC176*CND_HCC176;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC186*CND_HCC186;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC188*CND_HCC188;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC189*CND_HCC189;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC47_gCancer*CND_HCC47_gCancer;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + DIABETES_CHF*CND_DIABETES_CHF;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + CHF_gCopdCF*CND_CHF_gCopdCF;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC85_gRenal_V24*CND_HCC85_gRenal_V24;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + gCopdCF_CARD_RESP_FAIL*CND_gCopdCF_CARD_RESP_FAIL;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + HCC85_HCC96*CND_HCC85_HCC96;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + gSubstanceUseDisorder_gPsych*CND_gSubstanceUseDisorder_gPsych;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + D1*CND_D1;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + D2*CND_D2;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + D3*CND_D3;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + D4*CND_D4;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + D5*CND_D5;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + D6*CND_D6;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + D7*CND_D7;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + D8*CND_D8;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + D9*CND_D9;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND + D10P*CND_D10P;
+ MPRINT(V2423P1M):  ;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA=0;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + F65_69*CFA_F65_69;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + F70_74*CFA_F70_74;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + F75_79*CFA_F75_79;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + F80_84*CFA_F80_84;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + F85_89*CFA_F85_89;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + F90_94*CFA_F90_94;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + F95_GT*CFA_F95_GT;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + M65_69*CFA_M65_69;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + M70_74*CFA_M70_74;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + M75_79*CFA_M75_79;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + M80_84*CFA_M80_84;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + M85_89*CFA_M85_89;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + M90_94*CFA_M90_94;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + M95_GT*CFA_M95_GT;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + OriginallyDisabled_Female*CFA_OriginallyDisabled_Female;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + OriginallyDisabled_Male*CFA_OriginallyDisabled_Male;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC1*CFA_HCC1;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC2*CFA_HCC2;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC6*CFA_HCC6;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC8*CFA_HCC8;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC9*CFA_HCC9;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC10*CFA_HCC10;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC11*CFA_HCC11;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC12*CFA_HCC12;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC17*CFA_HCC17;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC18*CFA_HCC18;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC19*CFA_HCC19;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC21*CFA_HCC21;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC22*CFA_HCC22;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC23*CFA_HCC23;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC27*CFA_HCC27;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC28*CFA_HCC28;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC29*CFA_HCC29;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC33*CFA_HCC33;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC34*CFA_HCC34;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC35*CFA_HCC35;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC39*CFA_HCC39;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC40*CFA_HCC40;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC46*CFA_HCC46;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC47*CFA_HCC47;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC48*CFA_HCC48;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC51*CFA_HCC51;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC52*CFA_HCC52;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC54*CFA_HCC54;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC55*CFA_HCC55;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC56*CFA_HCC56;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC57*CFA_HCC57;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC58*CFA_HCC58;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC59*CFA_HCC59;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC60*CFA_HCC60;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC70*CFA_HCC70;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC71*CFA_HCC71;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC72*CFA_HCC72;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC73*CFA_HCC73;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC74*CFA_HCC74;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC75*CFA_HCC75;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC76*CFA_HCC76;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC77*CFA_HCC77;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC78*CFA_HCC78;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC79*CFA_HCC79;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC80*CFA_HCC80;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC82*CFA_HCC82;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC83*CFA_HCC83;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC84*CFA_HCC84;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC85*CFA_HCC85;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC86*CFA_HCC86;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC87*CFA_HCC87;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC88*CFA_HCC88;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC96*CFA_HCC96;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC99*CFA_HCC99;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC100*CFA_HCC100;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC103*CFA_HCC103;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC104*CFA_HCC104;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC106*CFA_HCC106;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC107*CFA_HCC107;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC108*CFA_HCC108;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC110*CFA_HCC110;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC111*CFA_HCC111;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC112*CFA_HCC112;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC114*CFA_HCC114;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC115*CFA_HCC115;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC122*CFA_HCC122;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC124*CFA_HCC124;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC134*CFA_HCC134;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC135*CFA_HCC135;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC136*CFA_HCC136;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC137*CFA_HCC137;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC138*CFA_HCC138;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC157*CFA_HCC157;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC158*CFA_HCC158;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC159*CFA_HCC159;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC161*CFA_HCC161;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC162*CFA_HCC162;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC166*CFA_HCC166;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC167*CFA_HCC167;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC169*CFA_HCC169;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC170*CFA_HCC170;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC173*CFA_HCC173;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC176*CFA_HCC176;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC186*CFA_HCC186;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC188*CFA_HCC188;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC189*CFA_HCC189;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC47_gCancer*CFA_HCC47_gCancer;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + DIABETES_CHF*CFA_DIABETES_CHF;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + CHF_gCopdCF*CFA_CHF_gCopdCF;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC85_gRenal_V24*CFA_HCC85_gRenal_V24;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + gCopdCF_CARD_RESP_FAIL*CFA_gCopdCF_CARD_RESP_FAIL;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + HCC85_HCC96*CFA_HCC85_HCC96;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + D1*CFA_D1;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + D2*CFA_D2;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + D3*CFA_D3;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + D4*CFA_D4;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + D5*CFA_D5;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + D6*CFA_D6;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + D7*CFA_D7;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + D8*CFA_D8;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + D9*CFA_D9;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA + D10P*CFA_D10P;
+ MPRINT(V2423P1M):  ;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD=0;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + F0_34*CFD_F0_34;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + F35_44*CFD_F35_44;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + F45_54*CFD_F45_54;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + F55_59*CFD_F55_59;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + F60_64*CFD_F60_64;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + M0_34*CFD_M0_34;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + M35_44*CFD_M35_44;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + M45_54*CFD_M45_54;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + M55_59*CFD_M55_59;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + M60_64*CFD_M60_64;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC1*CFD_HCC1;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC2*CFD_HCC2;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC6*CFD_HCC6;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC8*CFD_HCC8;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC9*CFD_HCC9;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC10*CFD_HCC10;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC11*CFD_HCC11;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC12*CFD_HCC12;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC17*CFD_HCC17;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC18*CFD_HCC18;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC19*CFD_HCC19;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC21*CFD_HCC21;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC22*CFD_HCC22;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC23*CFD_HCC23;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC27*CFD_HCC27;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC28*CFD_HCC28;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC29*CFD_HCC29;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC33*CFD_HCC33;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC34*CFD_HCC34;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC35*CFD_HCC35;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC39*CFD_HCC39;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC40*CFD_HCC40;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC46*CFD_HCC46;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC47*CFD_HCC47;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC48*CFD_HCC48;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC51*CFD_HCC51;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC52*CFD_HCC52;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC54*CFD_HCC54;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC55*CFD_HCC55;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC56*CFD_HCC56;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC57*CFD_HCC57;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC58*CFD_HCC58;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC59*CFD_HCC59;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC60*CFD_HCC60;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC70*CFD_HCC70;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC71*CFD_HCC71;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC72*CFD_HCC72;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC73*CFD_HCC73;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC74*CFD_HCC74;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC75*CFD_HCC75;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC76*CFD_HCC76;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC77*CFD_HCC77;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC78*CFD_HCC78;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC79*CFD_HCC79;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC80*CFD_HCC80;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC82*CFD_HCC82;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC83*CFD_HCC83;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC84*CFD_HCC84;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC85*CFD_HCC85;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC86*CFD_HCC86;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC87*CFD_HCC87;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC88*CFD_HCC88;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC96*CFD_HCC96;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC99*CFD_HCC99;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC100*CFD_HCC100;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC103*CFD_HCC103;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC104*CFD_HCC104;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC106*CFD_HCC106;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC107*CFD_HCC107;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC108*CFD_HCC108;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC110*CFD_HCC110;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC111*CFD_HCC111;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC112*CFD_HCC112;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC114*CFD_HCC114;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC115*CFD_HCC115;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC122*CFD_HCC122;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC124*CFD_HCC124;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC134*CFD_HCC134;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC135*CFD_HCC135;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC136*CFD_HCC136;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC137*CFD_HCC137;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC138*CFD_HCC138;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC157*CFD_HCC157;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC158*CFD_HCC158;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC159*CFD_HCC159;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC161*CFD_HCC161;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC162*CFD_HCC162;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC166*CFD_HCC166;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC167*CFD_HCC167;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC169*CFD_HCC169;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC170*CFD_HCC170;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC173*CFD_HCC173;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC176*CFD_HCC176;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC186*CFD_HCC186;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC188*CFD_HCC188;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC189*CFD_HCC189;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC47_gCancer*CFD_HCC47_gCancer;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + DIABETES_CHF*CFD_DIABETES_CHF;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + CHF_gCopdCF*CFD_CHF_gCopdCF;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC85_gRenal_V24*CFD_HCC85_gRenal_V24;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + gCopdCF_CARD_RESP_FAIL*CFD_gCopdCF_CARD_RESP_FAIL;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + HCC85_HCC96*CFD_HCC85_HCC96;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + gSubstanceUseDisorder_gPsych*CFD_gSubstanceUseDisorder_gPsych;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + D1*CFD_D1;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + D2*CFD_D2;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + D3*CFD_D3;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + D4*CFD_D4;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + D5*CFD_D5;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + D6*CFD_D6;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + D7*CFD_D7;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + D8*CFD_D8;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + D9*CFD_D9;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD + D10P*CFD_D10P;
+ MPRINT(V2423P1M):  ;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA=0;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + F65_69*CPA_F65_69;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + F70_74*CPA_F70_74;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + F75_79*CPA_F75_79;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + F80_84*CPA_F80_84;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + F85_89*CPA_F85_89;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + F90_94*CPA_F90_94;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + F95_GT*CPA_F95_GT;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + M65_69*CPA_M65_69;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + M70_74*CPA_M70_74;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + M75_79*CPA_M75_79;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + M80_84*CPA_M80_84;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + M85_89*CPA_M85_89;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + M90_94*CPA_M90_94;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + M95_GT*CPA_M95_GT;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + OriginallyDisabled_Female*CPA_OriginallyDisabled_Female;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + OriginallyDisabled_Male*CPA_OriginallyDisabled_Male;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC1*CPA_HCC1;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC2*CPA_HCC2;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC6*CPA_HCC6;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC8*CPA_HCC8;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC9*CPA_HCC9;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC10*CPA_HCC10;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC11*CPA_HCC11;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC12*CPA_HCC12;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC17*CPA_HCC17;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC18*CPA_HCC18;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC19*CPA_HCC19;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC21*CPA_HCC21;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC22*CPA_HCC22;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC23*CPA_HCC23;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC27*CPA_HCC27;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC28*CPA_HCC28;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC29*CPA_HCC29;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC33*CPA_HCC33;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC34*CPA_HCC34;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC35*CPA_HCC35;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC39*CPA_HCC39;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC40*CPA_HCC40;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC46*CPA_HCC46;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC47*CPA_HCC47;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC48*CPA_HCC48;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC51*CPA_HCC51;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC52*CPA_HCC52;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC54*CPA_HCC54;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC55*CPA_HCC55;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC56*CPA_HCC56;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC57*CPA_HCC57;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC58*CPA_HCC58;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC59*CPA_HCC59;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC60*CPA_HCC60;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC70*CPA_HCC70;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC71*CPA_HCC71;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC72*CPA_HCC72;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC73*CPA_HCC73;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC74*CPA_HCC74;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC75*CPA_HCC75;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC76*CPA_HCC76;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC77*CPA_HCC77;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC78*CPA_HCC78;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC79*CPA_HCC79;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC80*CPA_HCC80;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC82*CPA_HCC82;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC83*CPA_HCC83;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC84*CPA_HCC84;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC85*CPA_HCC85;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC86*CPA_HCC86;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC87*CPA_HCC87;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC88*CPA_HCC88;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC96*CPA_HCC96;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC99*CPA_HCC99;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC100*CPA_HCC100;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC103*CPA_HCC103;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC104*CPA_HCC104;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC106*CPA_HCC106;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC107*CPA_HCC107;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC108*CPA_HCC108;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC110*CPA_HCC110;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC111*CPA_HCC111;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC112*CPA_HCC112;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC114*CPA_HCC114;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC115*CPA_HCC115;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC122*CPA_HCC122;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC124*CPA_HCC124;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC134*CPA_HCC134;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC135*CPA_HCC135;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC136*CPA_HCC136;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC137*CPA_HCC137;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC138*CPA_HCC138;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC157*CPA_HCC157;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC158*CPA_HCC158;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC159*CPA_HCC159;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC161*CPA_HCC161;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC162*CPA_HCC162;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC166*CPA_HCC166;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC167*CPA_HCC167;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC169*CPA_HCC169;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC170*CPA_HCC170;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC173*CPA_HCC173;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC176*CPA_HCC176;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC186*CPA_HCC186;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC188*CPA_HCC188;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC189*CPA_HCC189;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC47_gCancer*CPA_HCC47_gCancer;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + DIABETES_CHF*CPA_DIABETES_CHF;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + CHF_gCopdCF*CPA_CHF_gCopdCF;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC85_gRenal_V24*CPA_HCC85_gRenal_V24;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + gCopdCF_CARD_RESP_FAIL*CPA_gCopdCF_CARD_RESP_FAIL;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + HCC85_HCC96*CPA_HCC85_HCC96;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + D1*CPA_D1;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + D2*CPA_D2;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + D3*CPA_D3;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + D4*CPA_D4;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + D5*CPA_D5;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + D6*CPA_D6;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + D7*CPA_D7;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + D8*CPA_D8;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + D9*CPA_D9;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA + D10P*CPA_D10P;
+ MPRINT(V2423P1M):  ;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD=0;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + F0_34*CPD_F0_34;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + F35_44*CPD_F35_44;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + F45_54*CPD_F45_54;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + F55_59*CPD_F55_59;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + F60_64*CPD_F60_64;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + M0_34*CPD_M0_34;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + M35_44*CPD_M35_44;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + M45_54*CPD_M45_54;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + M55_59*CPD_M55_59;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + M60_64*CPD_M60_64;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC1*CPD_HCC1;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC2*CPD_HCC2;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC6*CPD_HCC6;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC8*CPD_HCC8;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC9*CPD_HCC9;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC10*CPD_HCC10;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC11*CPD_HCC11;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC12*CPD_HCC12;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC17*CPD_HCC17;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC18*CPD_HCC18;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC19*CPD_HCC19;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC21*CPD_HCC21;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC22*CPD_HCC22;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC23*CPD_HCC23;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC27*CPD_HCC27;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC28*CPD_HCC28;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC29*CPD_HCC29;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC33*CPD_HCC33;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC34*CPD_HCC34;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC35*CPD_HCC35;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC39*CPD_HCC39;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC40*CPD_HCC40;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC46*CPD_HCC46;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC47*CPD_HCC47;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC48*CPD_HCC48;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC51*CPD_HCC51;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC52*CPD_HCC52;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC54*CPD_HCC54;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC55*CPD_HCC55;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC56*CPD_HCC56;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC57*CPD_HCC57;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC58*CPD_HCC58;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC59*CPD_HCC59;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC60*CPD_HCC60;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC70*CPD_HCC70;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC71*CPD_HCC71;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC72*CPD_HCC72;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC73*CPD_HCC73;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC74*CPD_HCC74;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC75*CPD_HCC75;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC76*CPD_HCC76;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC77*CPD_HCC77;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC78*CPD_HCC78;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC79*CPD_HCC79;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC80*CPD_HCC80;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC82*CPD_HCC82;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC83*CPD_HCC83;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC84*CPD_HCC84;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC85*CPD_HCC85;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC86*CPD_HCC86;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC87*CPD_HCC87;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC88*CPD_HCC88;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC96*CPD_HCC96;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC99*CPD_HCC99;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC100*CPD_HCC100;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC103*CPD_HCC103;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC104*CPD_HCC104;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC106*CPD_HCC106;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC107*CPD_HCC107;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC108*CPD_HCC108;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC110*CPD_HCC110;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC111*CPD_HCC111;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC112*CPD_HCC112;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC114*CPD_HCC114;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC115*CPD_HCC115;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC122*CPD_HCC122;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC124*CPD_HCC124;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC134*CPD_HCC134;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC135*CPD_HCC135;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC136*CPD_HCC136;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC137*CPD_HCC137;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC138*CPD_HCC138;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC157*CPD_HCC157;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC158*CPD_HCC158;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC159*CPD_HCC159;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC161*CPD_HCC161;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC162*CPD_HCC162;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC166*CPD_HCC166;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC167*CPD_HCC167;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC169*CPD_HCC169;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC170*CPD_HCC170;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC173*CPD_HCC173;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC176*CPD_HCC176;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC186*CPD_HCC186;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC188*CPD_HCC188;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC189*CPD_HCC189;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC47_gCancer*CPD_HCC47_gCancer;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + DIABETES_CHF*CPD_DIABETES_CHF;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + CHF_gCopdCF*CPD_CHF_gCopdCF;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC85_gRenal_V24*CPD_HCC85_gRenal_V24;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + gCopdCF_CARD_RESP_FAIL*CPD_gCopdCF_CARD_RESP_FAIL;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + HCC85_HCC96*CPD_HCC85_HCC96;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + gSubstanceUseDisorder_gPsych*CPD_gSubstanceUseDisorder_gPsych;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + D1*CPD_D1;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + D2*CPD_D2;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + D3*CPD_D3;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + D4*CPD_D4;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + D5*CPD_D5;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + D6*CPD_D6;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + D7*CPD_D7;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + D8*CPD_D8;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + D9*CPD_D9;
+ MPRINT(SCOREVAR):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD + D10P*CPD_D10P;
+ MPRINT(V2423P1M):  ;
+ MPRINT(V2423P1M):   ;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL=0;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + F0_34*INS_F0_34;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + F35_44*INS_F35_44;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + F45_54*INS_F45_54;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + F55_59*INS_F55_59;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + F60_64*INS_F60_64;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + F65_69*INS_F65_69;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + F70_74*INS_F70_74;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + F75_79*INS_F75_79;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + F80_84*INS_F80_84;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + F85_89*INS_F85_89;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + F90_94*INS_F90_94;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + F95_GT*INS_F95_GT;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + M0_34*INS_M0_34;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + M35_44*INS_M35_44;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + M45_54*INS_M45_54;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + M55_59*INS_M55_59;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + M60_64*INS_M60_64;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + M65_69*INS_M65_69;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + M70_74*INS_M70_74;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + M75_79*INS_M75_79;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + M80_84*INS_M80_84;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + M85_89*INS_M85_89;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + M90_94*INS_M90_94;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + M95_GT*INS_M95_GT;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + LTIMCAID*INS_LTIMCAID;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + ORIGDS*INS_ORIGDS;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + DISABLED_HCC85*INS_DISABLED_HCC85;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + DISABLED_PRESSURE_ULCER*INS_DISABLED_PRESSURE_ULCER;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + DISABLED_HCC161*INS_DISABLED_HCC161;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + DISABLED_HCC39*INS_DISABLED_HCC39;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + DISABLED_HCC77*INS_DISABLED_HCC77;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + DISABLED_HCC6*INS_DISABLED_HCC6;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + CHF_gCopdCF*INS_CHF_gCopdCF;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + gCopdCF_CARD_RESP_FAIL*INS_gCopdCF_CARD_RESP_FAIL;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + SEPSIS_PRESSURE_ULCER*INS_SEPSIS_PRESSURE_ULCER;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + SEPSIS_ARTIF_OPENINGS*INS_SEPSIS_ARTIF_OPENINGS;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + ART_OPENINGS_PRESS_ULCER*INS_ART_OPENINGS_PRESS_ULCER;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + DIABETES_CHF*INS_DIABETES_CHF;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + gCopdCF_ASP_SPEC_B_PNEUM*INS_gCopdCF_ASP_SPEC_B_PNEUM;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + ASP_SPEC_B_PNEUM_PRES_ULC*INS_ASP_SPEC_B_PNEUM_PRES_ULC;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + SEPSIS_ASP_SPEC_BACT_PNEUM*INS_SEPSIS_ASP_SPEC_BACT_PNEUM;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + SCHIZOPHRENIA_gCopdCF*INS_SCHIZOPHRENIA_gCopdCF;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + SCHIZOPHRENIA_CHF*INS_SCHIZOPHRENIA_CHF;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + SCHIZOPHRENIA_SEIZURES*INS_SCHIZOPHRENIA_SEIZURES;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC1*INS_HCC1;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC2*INS_HCC2;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC6*INS_HCC6;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC8*INS_HCC8;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC9*INS_HCC9;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC10*INS_HCC10;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC11*INS_HCC11;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC12*INS_HCC12;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC17*INS_HCC17;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC18*INS_HCC18;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC19*INS_HCC19;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC21*INS_HCC21;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC22*INS_HCC22;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC23*INS_HCC23;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC27*INS_HCC27;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC28*INS_HCC28;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC29*INS_HCC29;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC33*INS_HCC33;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC34*INS_HCC34;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC35*INS_HCC35;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC39*INS_HCC39;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC40*INS_HCC40;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC46*INS_HCC46;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC47*INS_HCC47;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC48*INS_HCC48;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC51*INS_HCC51;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC52*INS_HCC52;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC54*INS_HCC54;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC55*INS_HCC55;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC56*INS_HCC56;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC57*INS_HCC57;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC58*INS_HCC58;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC59*INS_HCC59;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC60*INS_HCC60;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC70*INS_HCC70;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC71*INS_HCC71;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC72*INS_HCC72;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC73*INS_HCC73;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC74*INS_HCC74;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC75*INS_HCC75;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC76*INS_HCC76;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC77*INS_HCC77;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC78*INS_HCC78;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC79*INS_HCC79;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC80*INS_HCC80;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC82*INS_HCC82;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC83*INS_HCC83;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC84*INS_HCC84;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC85*INS_HCC85;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC86*INS_HCC86;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC87*INS_HCC87;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC88*INS_HCC88;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC96*INS_HCC96;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC99*INS_HCC99;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC100*INS_HCC100;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC103*INS_HCC103;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC104*INS_HCC104;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC106*INS_HCC106;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC107*INS_HCC107;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC108*INS_HCC108;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC110*INS_HCC110;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC111*INS_HCC111;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC112*INS_HCC112;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC114*INS_HCC114;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC115*INS_HCC115;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC122*INS_HCC122;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC124*INS_HCC124;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC134*INS_HCC134;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC135*INS_HCC135;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC136*INS_HCC136;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC137*INS_HCC137;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC138*INS_HCC138;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC157*INS_HCC157;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC158*INS_HCC158;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC159*INS_HCC159;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC161*INS_HCC161;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC162*INS_HCC162;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC166*INS_HCC166;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC167*INS_HCC167;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC169*INS_HCC169;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC170*INS_HCC170;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC173*INS_HCC173;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC176*INS_HCC176;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC186*INS_HCC186;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC188*INS_HCC188;
+ MPRINT(SCOREVAR):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL + HCC189*INS_HCC189;
+ MPRINT(V2423P1M):  ;
+ MPRINT(V2423P1M):   ;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE=0;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF0_34*NE_NMCAID_NORIGDIS_NEF0_34;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF35_44*NE_NMCAID_NORIGDIS_NEF35_44;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF45_54*NE_NMCAID_NORIGDIS_NEF45_54;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF55_59*NE_NMCAID_NORIGDIS_NEF55_59;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF60_64*NE_NMCAID_NORIGDIS_NEF60_64;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF65*NE_NMCAID_NORIGDIS_NEF65;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF66*NE_NMCAID_NORIGDIS_NEF66;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF67*NE_NMCAID_NORIGDIS_NEF67;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF68*NE_NMCAID_NORIGDIS_NEF68;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF69*NE_NMCAID_NORIGDIS_NEF69;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF70_74*NE_NMCAID_NORIGDIS_NEF70_74;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF75_79*NE_NMCAID_NORIGDIS_NEF75_79;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF80_84*NE_NMCAID_NORIGDIS_NEF80_84;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF85_89*NE_NMCAID_NORIGDIS_NEF85_89;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF90_94*NE_NMCAID_NORIGDIS_NEF90_94;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF95_GT*NE_NMCAID_NORIGDIS_NEF95_GT;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM0_34*NE_NMCAID_NORIGDIS_NEM0_34;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM35_44*NE_NMCAID_NORIGDIS_NEM35_44;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM45_54*NE_NMCAID_NORIGDIS_NEM45_54;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM55_59*NE_NMCAID_NORIGDIS_NEM55_59;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM60_64*NE_NMCAID_NORIGDIS_NEM60_64;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM65*NE_NMCAID_NORIGDIS_NEM65;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM66*NE_NMCAID_NORIGDIS_NEM66;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM67*NE_NMCAID_NORIGDIS_NEM67;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM68*NE_NMCAID_NORIGDIS_NEM68;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM69*NE_NMCAID_NORIGDIS_NEM69;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM70_74*NE_NMCAID_NORIGDIS_NEM70_74;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM75_79*NE_NMCAID_NORIGDIS_NEM75_79;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM80_84*NE_NMCAID_NORIGDIS_NEM80_84;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM85_89*NE_NMCAID_NORIGDIS_NEM85_89;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM90_94*NE_NMCAID_NORIGDIS_NEM90_94;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM95_GT*NE_NMCAID_NORIGDIS_NEM95_GT;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF0_34*NE_MCAID_NORIGDIS_NEF0_34;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF35_44*NE_MCAID_NORIGDIS_NEF35_44;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF45_54*NE_MCAID_NORIGDIS_NEF45_54;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF55_59*NE_MCAID_NORIGDIS_NEF55_59;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF60_64*NE_MCAID_NORIGDIS_NEF60_64;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF65*NE_MCAID_NORIGDIS_NEF65;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF66*NE_MCAID_NORIGDIS_NEF66;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF67*NE_MCAID_NORIGDIS_NEF67;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF68*NE_MCAID_NORIGDIS_NEF68;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF69*NE_MCAID_NORIGDIS_NEF69;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF70_74*NE_MCAID_NORIGDIS_NEF70_74;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF75_79*NE_MCAID_NORIGDIS_NEF75_79;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF80_84*NE_MCAID_NORIGDIS_NEF80_84;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF85_89*NE_MCAID_NORIGDIS_NEF85_89;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF90_94*NE_MCAID_NORIGDIS_NEF90_94;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEF95_GT*NE_MCAID_NORIGDIS_NEF95_GT;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM0_34*NE_MCAID_NORIGDIS_NEM0_34;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM35_44*NE_MCAID_NORIGDIS_NEM35_44;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM45_54*NE_MCAID_NORIGDIS_NEM45_54;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM55_59*NE_MCAID_NORIGDIS_NEM55_59;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM60_64*NE_MCAID_NORIGDIS_NEM60_64;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM65*NE_MCAID_NORIGDIS_NEM65;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM66*NE_MCAID_NORIGDIS_NEM66;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM67*NE_MCAID_NORIGDIS_NEM67;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM68*NE_MCAID_NORIGDIS_NEM68;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM69*NE_MCAID_NORIGDIS_NEM69;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM70_74*NE_MCAID_NORIGDIS_NEM70_74;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM75_79*NE_MCAID_NORIGDIS_NEM75_79;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM80_84*NE_MCAID_NORIGDIS_NEM80_84;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM85_89*NE_MCAID_NORIGDIS_NEM85_89;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM90_94*NE_MCAID_NORIGDIS_NEM90_94;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_NORIGDIS_NEM95_GT*NE_MCAID_NORIGDIS_NEM95_GT;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF65*NE_NMCAID_ORIGDIS_NEF65;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF66*NE_NMCAID_ORIGDIS_NEF66;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF67*NE_NMCAID_ORIGDIS_NEF67;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF68*NE_NMCAID_ORIGDIS_NEF68;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF69*NE_NMCAID_ORIGDIS_NEF69;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF70_74*NE_NMCAID_ORIGDIS_NEF70_74;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF75_79*NE_NMCAID_ORIGDIS_NEF75_79;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF80_84*NE_NMCAID_ORIGDIS_NEF80_84;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF85_89*NE_NMCAID_ORIGDIS_NEF85_89;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF90_94*NE_NMCAID_ORIGDIS_NEF90_94;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF95_GT*NE_NMCAID_ORIGDIS_NEF95_GT;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM65*NE_NMCAID_ORIGDIS_NEM65;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM66*NE_NMCAID_ORIGDIS_NEM66;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM67*NE_NMCAID_ORIGDIS_NEM67;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM68*NE_NMCAID_ORIGDIS_NEM68;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM69*NE_NMCAID_ORIGDIS_NEM69;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM70_74*NE_NMCAID_ORIGDIS_NEM70_74;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM75_79*NE_NMCAID_ORIGDIS_NEM75_79;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM80_84*NE_NMCAID_ORIGDIS_NEM80_84;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM85_89*NE_NMCAID_ORIGDIS_NEM85_89;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM90_94*NE_NMCAID_ORIGDIS_NEM90_94;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM95_GT*NE_NMCAID_ORIGDIS_NEM95_GT;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEF65*NE_MCAID_ORIGDIS_NEF65;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEF66*NE_MCAID_ORIGDIS_NEF66;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEF67*NE_MCAID_ORIGDIS_NEF67;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEF68*NE_MCAID_ORIGDIS_NEF68;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEF69*NE_MCAID_ORIGDIS_NEF69;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEF70_74*NE_MCAID_ORIGDIS_NEF70_74;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEF75_79*NE_MCAID_ORIGDIS_NEF75_79;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEF80_84*NE_MCAID_ORIGDIS_NEF80_84;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEF85_89*NE_MCAID_ORIGDIS_NEF85_89;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEF90_94*NE_MCAID_ORIGDIS_NEF90_94;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEF95_GT*NE_MCAID_ORIGDIS_NEF95_GT;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEM65*NE_MCAID_ORIGDIS_NEM65;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEM66*NE_MCAID_ORIGDIS_NEM66;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEM67*NE_MCAID_ORIGDIS_NEM67;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEM68*NE_MCAID_ORIGDIS_NEM68;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEM69*NE_MCAID_ORIGDIS_NEM69;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEM70_74*NE_MCAID_ORIGDIS_NEM70_74;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEM75_79*NE_MCAID_ORIGDIS_NEM75_79;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEM80_84*NE_MCAID_ORIGDIS_NEM80_84;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEM85_89*NE_MCAID_ORIGDIS_NEM85_89;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEM90_94*NE_MCAID_ORIGDIS_NEM90_94;
+ MPRINT(SCOREVAR):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE + MCAID_ORIGDIS_NEM95_GT*NE_MCAID_ORIGDIS_NEM95_GT;
+ MPRINT(V2423P1M):  ;
+ MPRINT(V2423P1M):   ;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE=0;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF0_34*SNPNE_NMCAID_NORIGDIS_NEF0_34;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF35_44*SNPNE_NMCAID_NORIGDIS_NEF35_44;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF45_54*SNPNE_NMCAID_NORIGDIS_NEF45_54;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF55_59*SNPNE_NMCAID_NORIGDIS_NEF55_59;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF60_64*SNPNE_NMCAID_NORIGDIS_NEF60_64;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF65*SNPNE_NMCAID_NORIGDIS_NEF65;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF66*SNPNE_NMCAID_NORIGDIS_NEF66;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF67*SNPNE_NMCAID_NORIGDIS_NEF67;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF68*SNPNE_NMCAID_NORIGDIS_NEF68;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF69*SNPNE_NMCAID_NORIGDIS_NEF69;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF70_74*SNPNE_NMCAID_NORIGDIS_NEF70_74;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF75_79*SNPNE_NMCAID_NORIGDIS_NEF75_79;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF80_84*SNPNE_NMCAID_NORIGDIS_NEF80_84;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF85_89*SNPNE_NMCAID_NORIGDIS_NEF85_89;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF90_94*SNPNE_NMCAID_NORIGDIS_NEF90_94;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEF95_GT*SNPNE_NMCAID_NORIGDIS_NEF95_GT;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM0_34*SNPNE_NMCAID_NORIGDIS_NEM0_34;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM35_44*SNPNE_NMCAID_NORIGDIS_NEM35_44;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM45_54*SNPNE_NMCAID_NORIGDIS_NEM45_54;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM55_59*SNPNE_NMCAID_NORIGDIS_NEM55_59;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM60_64*SNPNE_NMCAID_NORIGDIS_NEM60_64;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM65*SNPNE_NMCAID_NORIGDIS_NEM65;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM66*SNPNE_NMCAID_NORIGDIS_NEM66;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM67*SNPNE_NMCAID_NORIGDIS_NEM67;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM68*SNPNE_NMCAID_NORIGDIS_NEM68;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM69*SNPNE_NMCAID_NORIGDIS_NEM69;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM70_74*SNPNE_NMCAID_NORIGDIS_NEM70_74;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM75_79*SNPNE_NMCAID_NORIGDIS_NEM75_79;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM80_84*SNPNE_NMCAID_NORIGDIS_NEM80_84;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM85_89*SNPNE_NMCAID_NORIGDIS_NEM85_89;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM90_94*SNPNE_NMCAID_NORIGDIS_NEM90_94;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_NORIGDIS_NEM95_GT*SNPNE_NMCAID_NORIGDIS_NEM95_GT;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF0_34*SNPNE_MCAID_NORIGDIS_NEF0_34;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF35_44*SNPNE_MCAID_NORIGDIS_NEF35_44;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF45_54*SNPNE_MCAID_NORIGDIS_NEF45_54;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF55_59*SNPNE_MCAID_NORIGDIS_NEF55_59;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF60_64*SNPNE_MCAID_NORIGDIS_NEF60_64;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF65*SNPNE_MCAID_NORIGDIS_NEF65;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF66*SNPNE_MCAID_NORIGDIS_NEF66;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF67*SNPNE_MCAID_NORIGDIS_NEF67;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF68*SNPNE_MCAID_NORIGDIS_NEF68;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF69*SNPNE_MCAID_NORIGDIS_NEF69;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF70_74*SNPNE_MCAID_NORIGDIS_NEF70_74;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF75_79*SNPNE_MCAID_NORIGDIS_NEF75_79;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF80_84*SNPNE_MCAID_NORIGDIS_NEF80_84;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF85_89*SNPNE_MCAID_NORIGDIS_NEF85_89;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF90_94*SNPNE_MCAID_NORIGDIS_NEF90_94;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEF95_GT*SNPNE_MCAID_NORIGDIS_NEF95_GT;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM0_34*SNPNE_MCAID_NORIGDIS_NEM0_34;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM35_44*SNPNE_MCAID_NORIGDIS_NEM35_44;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM45_54*SNPNE_MCAID_NORIGDIS_NEM45_54;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM55_59*SNPNE_MCAID_NORIGDIS_NEM55_59;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM60_64*SNPNE_MCAID_NORIGDIS_NEM60_64;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM65*SNPNE_MCAID_NORIGDIS_NEM65;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM66*SNPNE_MCAID_NORIGDIS_NEM66;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM67*SNPNE_MCAID_NORIGDIS_NEM67;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM68*SNPNE_MCAID_NORIGDIS_NEM68;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM69*SNPNE_MCAID_NORIGDIS_NEM69;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM70_74*SNPNE_MCAID_NORIGDIS_NEM70_74;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM75_79*SNPNE_MCAID_NORIGDIS_NEM75_79;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM80_84*SNPNE_MCAID_NORIGDIS_NEM80_84;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM85_89*SNPNE_MCAID_NORIGDIS_NEM85_89;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM90_94*SNPNE_MCAID_NORIGDIS_NEM90_94;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_NORIGDIS_NEM95_GT*SNPNE_MCAID_NORIGDIS_NEM95_GT;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF65*SNPNE_NMCAID_ORIGDIS_NEF65;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF66*SNPNE_NMCAID_ORIGDIS_NEF66;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF67*SNPNE_NMCAID_ORIGDIS_NEF67;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF68*SNPNE_NMCAID_ORIGDIS_NEF68;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF69*SNPNE_NMCAID_ORIGDIS_NEF69;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF70_74*SNPNE_NMCAID_ORIGDIS_NEF70_74;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF75_79*SNPNE_NMCAID_ORIGDIS_NEF75_79;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF80_84*SNPNE_NMCAID_ORIGDIS_NEF80_84;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF85_89*SNPNE_NMCAID_ORIGDIS_NEF85_89;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF90_94*SNPNE_NMCAID_ORIGDIS_NEF90_94;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEF95_GT*SNPNE_NMCAID_ORIGDIS_NEF95_GT;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM65*SNPNE_NMCAID_ORIGDIS_NEM65;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM66*SNPNE_NMCAID_ORIGDIS_NEM66;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM67*SNPNE_NMCAID_ORIGDIS_NEM67;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM68*SNPNE_NMCAID_ORIGDIS_NEM68;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM69*SNPNE_NMCAID_ORIGDIS_NEM69;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM70_74*SNPNE_NMCAID_ORIGDIS_NEM70_74;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM75_79*SNPNE_NMCAID_ORIGDIS_NEM75_79;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM80_84*SNPNE_NMCAID_ORIGDIS_NEM80_84;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM85_89*SNPNE_NMCAID_ORIGDIS_NEM85_89;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM90_94*SNPNE_NMCAID_ORIGDIS_NEM90_94;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + NMCAID_ORIGDIS_NEM95_GT*SNPNE_NMCAID_ORIGDIS_NEM95_GT;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEF65*SNPNE_MCAID_ORIGDIS_NEF65;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEF66*SNPNE_MCAID_ORIGDIS_NEF66;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEF67*SNPNE_MCAID_ORIGDIS_NEF67;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEF68*SNPNE_MCAID_ORIGDIS_NEF68;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEF69*SNPNE_MCAID_ORIGDIS_NEF69;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEF70_74*SNPNE_MCAID_ORIGDIS_NEF70_74;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEF75_79*SNPNE_MCAID_ORIGDIS_NEF75_79;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEF80_84*SNPNE_MCAID_ORIGDIS_NEF80_84;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEF85_89*SNPNE_MCAID_ORIGDIS_NEF85_89;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEF90_94*SNPNE_MCAID_ORIGDIS_NEF90_94;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEF95_GT*SNPNE_MCAID_ORIGDIS_NEF95_GT;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEM65*SNPNE_MCAID_ORIGDIS_NEM65;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEM66*SNPNE_MCAID_ORIGDIS_NEM66;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEM67*SNPNE_MCAID_ORIGDIS_NEM67;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEM68*SNPNE_MCAID_ORIGDIS_NEM68;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEM69*SNPNE_MCAID_ORIGDIS_NEM69;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEM70_74*SNPNE_MCAID_ORIGDIS_NEM70_74;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEM75_79*SNPNE_MCAID_ORIGDIS_NEM75_79;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEM80_84*SNPNE_MCAID_ORIGDIS_NEM80_84;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEM85_89*SNPNE_MCAID_ORIGDIS_NEM85_89;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEM90_94*SNPNE_MCAID_ORIGDIS_NEM90_94;
+ MPRINT(SCOREVAR):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE + MCAID_ORIGDIS_NEM95_GT*SNPNE_MCAID_ORIGDIS_NEM95_GT;
+ MPRINT(V2423P1M):  ;
+ MPRINT(V2423P1M):   ;
+ MPRINT(V2423P1M):   SCORE_COMMUNITY_NA = SCORE_COMMUNITY_NA *1;
+ MPRINT(V2423P1M):   SCORE_COMMUNITY_ND = SCORE_COMMUNITY_ND *1;
+ MPRINT(V2423P1M):   SCORE_COMMUNITY_FBA = SCORE_COMMUNITY_FBA *1;
+ MPRINT(V2423P1M):   SCORE_COMMUNITY_FBD = SCORE_COMMUNITY_FBD *1;
+ MPRINT(V2423P1M):   SCORE_COMMUNITY_PBA = SCORE_COMMUNITY_PBA *1;
+ MPRINT(V2423P1M):   SCORE_COMMUNITY_PBD = SCORE_COMMUNITY_PBD *1;
+ MPRINT(V2423P1M):   SCORE_INSTITUTIONAL = SCORE_INSTITUTIONAL *1;
+ MPRINT(V2423P1M):   SCORE_NEW_ENROLLEE = SCORE_NEW_ENROLLEE *1;
+ MPRINT(V2423P1M):   SCORE_SNP_NEW_ENROLLEE = SCORE_SNP_NEW_ENROLLEE*1;
+ MPRINT(V2423P1M):   OUTPUT OUT.PERSON;
+ MPRINT(V2423P1M):   END;
+ MPRINT(V2423P1M):   END;
+ MPRINT(V2423P1M):   RUN;
+ 
+ NOTE: Character values have been converted to numeric values at the places given by: (Line):(Column).
+       1299:28    1299:237   1299:199   1299:231   1299:37    1299:92    1299:147   1299:202   1299:7     1299:62    1299:117
+       1299:172   1299:227   1299:27    1299:83    1299:139   1299:195   1299:251   1299:54    1299:110   1299:166   1299:222
+       1299:25    1299:81    1299:137   1299:193   1299:249   1299:54    1299:231   1299:38    1299:96    1299:154   1299:212
+       1299:23    1299:49    1299:90    1299:113   1299:157   1299:215   1299:23    1299:81    1299:139   1299:198   1299:7
+       1299:66    1299:125   1299:184   1299:243   1299:49    1299:108   1299:167   1299:226   1299:39    1299:98    1299:124
+       1299:166   1299:189   1299:233   1299:39    1299:98    1299:157   1299:216   1299:23    1299:82    1299:141   1299:200
+       1299:7     1299:66    1299:52    1299:108   1299:160   
+ NOTE: There were 1 observations read from the data set INCOEF.HCCCOEFN.
+ NOTE: There were 2 observations read from the data set IN1.PERSON.
+ NOTE: There were 4 observations read from the data set IN2.DIAG.
+ NOTE: The data set OUT.PERSON has 2 observations and 1690 variables.
+ NOTE: DATA statement used (Total process time):
+       real time           0.50 seconds
+       user cpu time       0.48 seconds
+       system cpu time     0.01 seconds
+       memory              8466.43k
+       OS Memory           31128.00k
+       Timestamp           08/10/2023 03:05:33 PM
+       Step Count                        24  Switch Count  2
+       Page Faults                       0
+       Page Reclaims                     2277
+       Page Swaps                        0
+       Voluntary Context Switches        70
+       Involuntary Context Switches      0
+       Block Input Operations            1752
+       Block Output Operations           14864
+       
+ 
+ MPRINT(V2423P1M):   PROC PRINT U DATA=OUT.PERSON(OBS=46);
+ MPRINT(V2423P1M):   TITLE '*** V2423P1M output file ***';
+ MPRINT(V2423P1M):   RUN ;
+ NOTE: There were 2 observations read from the data set OUT.PERSON.
+ NOTE: PROCEDURE PRINT used (Total process time):
+       real time           1.13 seconds
+       user cpu time       1.13 seconds
+       system cpu time     0.00 seconds
+       memory              13646.71k
+       OS Memory           37192.00k
+       Timestamp           08/10/2023 03:05:34 PM
+       Step Count                        25  Switch Count  1
+       Page Faults                       0
+       Page Reclaims                     2880
+       Page Swaps                        0
+       Voluntary Context Switches        21
+       Involuntary Context Switches      1
+       Block Input Operations            544
+       Block Output Operations           368
+       
+ 
+ MPRINT(V2423P1M):   PROC CONTENTS DATA=OUT.PERSON;
+ MPRINT(V2423P1M):   RUN;
+ 
+ NOTE: PROCEDURE CONTENTS used (Total process time):
+       real time           1.61 seconds
+       user cpu time       1.61 seconds
+       system cpu time     0.00 seconds
+       memory              2481.78k
+       OS Memory           27656.00k
+       Timestamp           08/10/2023 03:05:36 PM
+       Step Count                        26  Switch Count  0
+       Page Faults                       0
+       Page Reclaims                     257
+       Page Swaps                        0
+       Voluntary Context Switches        9
+       Involuntary Context Switches      2
+       Block Input Operations            0
+       Block Output Operations           784
+       
+ 
+ 1300       
+ 1301       
+ 1302       FILENAME Output1 "/home/u63506291/sasuser/v24/Output/Person1.csv";
+ 1303       PROC EXPORT DATA=OUT.PERSON OUTFILE=Output1 DBMS = CSV;
+ 1304       RUN;
+ 
+ NOTE: Export cancelled.  Output file OUTPUT1 already exists. Specify REPLACE option to overwrite it.
+ NOTE: The SAS System stopped processing this step because of errors.
+ NOTE: PROCEDURE EXPORT used (Total process time):
+       real time           0.00 seconds
+       user cpu time       0.00 seconds
+       system cpu time     0.00 seconds
+       memory              193.37k
+       OS Memory           26784.00k
+       Timestamp           08/10/2023 03:05:36 PM
+       Step Count                        27  Switch Count  0
+       Page Faults                       0
+       Page Reclaims                     109
+       Page Swaps                        0
+       Voluntary Context Switches        0
+       Involuntary Context Switches      0
+       Block Input Operations            0
+       Block Output Operations           0
+       
+ 1305       
+ 1306       OPTIONS NONOTES NOSTIMER NOSOURCE NOSYNTAXCHECK;
+ 1316       
